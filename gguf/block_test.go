@@ -123,7 +123,7 @@ func TestShannonEntropy(t *testing.T) {
 func TestZeroScaleCount(t *testing.T) {
 	// 2 Q8_0 blocks, one with zero scale
 	data := make([]byte, 68)
-	binary.LittleEndian.PutUint16(data[0:], 0x0000) // zero scale
+	binary.LittleEndian.PutUint16(data[0:], 0x0000)  // zero scale
 	binary.LittleEndian.PutUint16(data[34:], 0x3C00) // normal scale
 
 	bs := ExtractBlockStats(data, "test", TypeQ8_0)

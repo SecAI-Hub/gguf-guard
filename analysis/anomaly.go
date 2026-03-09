@@ -50,19 +50,19 @@ type Anomaly struct {
 
 // AnomalyReport is the complete output of anomaly detection.
 type AnomalyReport struct {
-	Score      float64   `json:"score"`
-	Confidence string    `json:"confidence"`
-	Anomalies  []Anomaly `json:"anomalies"`
-	Summary    string    `json:"summary"`
+	Score      float64      `json:"score"`
+	Confidence string       `json:"confidence"`
+	Anomalies  []Anomaly    `json:"anomalies"`
+	Summary    string       `json:"summary"`
 	Layers     *LayerScores `json:"layers,omitempty"`
 }
 
 // LayerScores breaks down suspiciousness by analysis layer.
 type LayerScores struct {
-	TensorLocal  float64 `json:"tensor_local"`  // per-tensor moment/outlier checks
-	RoleGroup    float64 `json:"role_group"`     // cross-layer consistency
-	ModelGlobal  float64 `json:"model_global"`   // overall distribution of suspicion
-	Reference    float64 `json:"reference"`      // deviation from reference profile
+	TensorLocal float64 `json:"tensor_local"` // per-tensor moment/outlier checks
+	RoleGroup   float64 `json:"role_group"`   // cross-layer consistency
+	ModelGlobal float64 `json:"model_global"` // overall distribution of suspicion
+	Reference   float64 `json:"reference"`    // deviation from reference profile
 }
 
 // DetectAnomalies runs all anomaly checks on a set of tensor statistics.

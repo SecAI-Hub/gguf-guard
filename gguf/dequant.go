@@ -326,9 +326,9 @@ func dequantQ5_K(data []byte, maxElements int) ([]float32, error) {
 		off := bi * blockSize
 		d := F16ToF32(binary.LittleEndian.Uint16(data[off:]))
 		dmin := F16ToF32(binary.LittleEndian.Uint16(data[off+2:]))
-		scales := data[off+4 : off+16]  // 12 bytes
-		qh := data[off+16 : off+48]     // 32 bytes (high bits)
-		qs := data[off+48 : off+176]    // 128 bytes (low nibbles)
+		scales := data[off+4 : off+16] // 12 bytes
+		qh := data[off+16 : off+48]    // 32 bytes (high bits)
+		qs := data[off+48 : off+176]   // 128 bytes (low nibbles)
 
 		for j := 0; j < 8; j++ {
 			var sc, m float32

@@ -7,25 +7,25 @@ import (
 
 // CompareResult holds the comparison between two models.
 type CompareResult struct {
-	Baseline    string           `json:"baseline"`
-	Candidate   string           `json:"candidate"`
-	SameStruct  bool             `json:"same_structure"`
-	Diffs       []TensorDiff     `json:"diffs,omitempty"`
-	MissingIn   []string         `json:"missing_in_candidate,omitempty"`
-	ExtraIn     []string         `json:"extra_in_candidate,omitempty"`
-	MaxDistance float64           `json:"max_distance"`
-	MeanDistance float64          `json:"mean_distance"`
-	Summary     string           `json:"summary"`
+	Baseline     string       `json:"baseline"`
+	Candidate    string       `json:"candidate"`
+	SameStruct   bool         `json:"same_structure"`
+	Diffs        []TensorDiff `json:"diffs,omitempty"`
+	MissingIn    []string     `json:"missing_in_candidate,omitempty"`
+	ExtraIn      []string     `json:"extra_in_candidate,omitempty"`
+	MaxDistance  float64      `json:"max_distance"`
+	MeanDistance float64      `json:"mean_distance"`
+	Summary      string       `json:"summary"`
 }
 
 // TensorDiff shows how a tensor's statistics differ between two models.
 type TensorDiff struct {
-	Name         string  `json:"name"`
-	MeanDelta    float64 `json:"mean_delta"`
-	VarDelta     float64 `json:"variance_delta"`
-	KurtDelta    float64 `json:"kurtosis_delta"`
-	Distance     float64 `json:"distance"`
-	Significant  bool    `json:"significant"`
+	Name        string  `json:"name"`
+	MeanDelta   float64 `json:"mean_delta"`
+	VarDelta    float64 `json:"variance_delta"`
+	KurtDelta   float64 `json:"kurtosis_delta"`
+	Distance    float64 `json:"distance"`
+	Significant bool    `json:"significant"`
 }
 
 // Compare analyzes the statistical differences between two sets of tensor stats.

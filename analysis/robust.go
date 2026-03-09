@@ -8,15 +8,15 @@ import (
 // RobustStats holds outlier-resistant statistics that reduce false positives
 // on naturally non-Gaussian tensors (e.g., attention weights, embeddings).
 type RobustStats struct {
-	Median       float64 `json:"median"`
-	MAD          float64 `json:"mad"`           // Median Absolute Deviation
-	TrimmedMean  float64 `json:"trimmed_mean"`  // 10% trimmed mean
-	TukeyLowerQ1 float64 `json:"tukey_lower"`   // Q1 - 1.5*IQR
-	TukeyUpperQ3 float64 `json:"tukey_upper"`   // Q3 + 1.5*IQR
-	TukeyOutliers int    `json:"tukey_outliers"` // count outside Tukey fences
-	IQR          float64 `json:"iqr"`
-	P25          float64 `json:"p25"`
-	P75          float64 `json:"p75"`
+	Median        float64 `json:"median"`
+	MAD           float64 `json:"mad"`            // Median Absolute Deviation
+	TrimmedMean   float64 `json:"trimmed_mean"`   // 10% trimmed mean
+	TukeyLowerQ1  float64 `json:"tukey_lower"`    // Q1 - 1.5*IQR
+	TukeyUpperQ3  float64 `json:"tukey_upper"`    // Q3 + 1.5*IQR
+	TukeyOutliers int     `json:"tukey_outliers"` // count outside Tukey fences
+	IQR           float64 `json:"iqr"`
+	P25           float64 `json:"p25"`
+	P75           float64 `json:"p75"`
 }
 
 // ComputeRobustStats calculates outlier-resistant statistics from float64 values.

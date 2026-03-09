@@ -22,9 +22,9 @@ type ReferenceProfile struct {
 	SourceHash     string                    `json:"source_hash"`
 
 	// Multi-sample provenance (v2)
-	SampleCount    int                       `json:"sample_count,omitempty"`
-	SourceHashes   []string                  `json:"source_hashes,omitempty"`
-	Provenance     *ProfileProvenance        `json:"provenance,omitempty"`
+	SampleCount  int                `json:"sample_count,omitempty"`
+	SourceHashes []string           `json:"source_hashes,omitempty"`
+	Provenance   *ProfileProvenance `json:"provenance,omitempty"`
 }
 
 // ProfileProvenance records the toolchain and conversion context used

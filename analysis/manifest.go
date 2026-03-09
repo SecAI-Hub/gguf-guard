@@ -14,16 +14,16 @@ import (
 // It contains per-tensor hashes, structural metadata, and an optional
 // Merkle root that enables efficient integrity verification.
 type Manifest struct {
-	Version       string         `json:"manifest_version"`
-	FileHash      string         `json:"file_hash"`
-	StructureHash string         `json:"structure_hash"`
-	Architecture  string         `json:"architecture"`
-	QuantType     string         `json:"quant_type"`
-	TensorCount   int            `json:"tensor_count"`
-	Parameters    uint64         `json:"parameters"`
-	FileSize      int64          `json:"file_size"`
-	MerkleRoot    string         `json:"merkle_root"`
-	Tensors       []TensorEntry  `json:"tensors"`
+	Version       string        `json:"manifest_version"`
+	FileHash      string        `json:"file_hash"`
+	StructureHash string        `json:"structure_hash"`
+	Architecture  string        `json:"architecture"`
+	QuantType     string        `json:"quant_type"`
+	TensorCount   int           `json:"tensor_count"`
+	Parameters    uint64        `json:"parameters"`
+	FileSize      int64         `json:"file_size"`
+	MerkleRoot    string        `json:"merkle_root"`
+	Tensors       []TensorEntry `json:"tensors"`
 }
 
 // TensorEntry holds per-tensor integrity data.

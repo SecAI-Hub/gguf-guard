@@ -10,28 +10,28 @@ import (
 // ModelFamily describes the expected structure of a model architecture,
 // including tensor naming conventions, expected shapes, and layer organization.
 type ModelFamily struct {
-	Name           string              `json:"name"`
-	Architectures  []string            `json:"architectures"` // matching arch strings
-	TensorPrefix   string              `json:"tensor_prefix"` // "blk" or "layers"
-	ExpectedRoles  []string            `json:"expected_roles"`
-	ShapeRules     []ShapeRule         `json:"shape_rules,omitempty"`
+	Name          string      `json:"name"`
+	Architectures []string    `json:"architectures"` // matching arch strings
+	TensorPrefix  string      `json:"tensor_prefix"` // "blk" or "layers"
+	ExpectedRoles []string    `json:"expected_roles"`
+	ShapeRules    []ShapeRule `json:"shape_rules,omitempty"`
 }
 
 // ShapeRule defines an expected relationship between tensor dimensions.
 type ShapeRule struct {
 	TensorSuffix string `json:"tensor_suffix"`
-	DimCount     int    `json:"dim_count"`     // expected number of dimensions
+	DimCount     int    `json:"dim_count"` // expected number of dimensions
 	Description  string `json:"description"`
 }
 
 // FamilyMatch describes how well a file matches a known model family.
 type FamilyMatch struct {
-	Family          string  `json:"family"`
-	MatchScore      float64 `json:"match_score"`      // 0-1
-	MatchedRoles    int     `json:"matched_roles"`
-	MissingRoles    int     `json:"missing_roles"`
-	ExtraRoles      int     `json:"extra_roles"`
-	ShapeViolations int     `json:"shape_violations"`
+	Family          string   `json:"family"`
+	MatchScore      float64  `json:"match_score"` // 0-1
+	MatchedRoles    int      `json:"matched_roles"`
+	MissingRoles    int      `json:"missing_roles"`
+	ExtraRoles      int      `json:"extra_roles"`
+	ShapeViolations int      `json:"shape_violations"`
 	Details         []string `json:"details,omitempty"`
 }
 

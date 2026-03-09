@@ -20,18 +20,18 @@ type QuantAnomaly struct {
 
 // QuantReport holds the results of block-level quantization analysis.
 type QuantReport struct {
-	TensorsAnalyzed int             `json:"tensors_analyzed"`
-	Anomalies       []QuantAnomaly  `json:"anomalies,omitempty"`
+	TensorsAnalyzed int                `json:"tensors_analyzed"`
+	Anomalies       []QuantAnomaly     `json:"anomalies,omitempty"`
 	BlockStats      []*gguf.BlockStats `json:"block_stats,omitempty"`
 }
 
 // QuantThresholds defines limits for quant-aware anomaly detection.
 type QuantThresholds struct {
-	MinScaleEntropy     float64 `json:"min_scale_entropy"`      // below = suspiciously uniform scales
-	MaxScaleRatio       float64 `json:"max_scale_ratio"`        // max/min scale ratio
-	MinCodeEntropy      float64 `json:"min_code_entropy"`       // below = suspiciously non-uniform codes
-	MaxSaturationRatio  float64 `json:"max_saturation_ratio"`   // bin extreme saturation
-	MaxRepeatedFraction float64 `json:"max_repeated_fraction"`  // fraction of repeated blocks
+	MinScaleEntropy     float64 `json:"min_scale_entropy"`     // below = suspiciously uniform scales
+	MaxScaleRatio       float64 `json:"max_scale_ratio"`       // max/min scale ratio
+	MinCodeEntropy      float64 `json:"min_code_entropy"`      // below = suspiciously non-uniform codes
+	MaxSaturationRatio  float64 `json:"max_saturation_ratio"`  // bin extreme saturation
+	MaxRepeatedFraction float64 `json:"max_repeated_fraction"` // fraction of repeated blocks
 	MaxZeroScaleFrac    float64 `json:"max_zero_scale_fraction"`
 }
 

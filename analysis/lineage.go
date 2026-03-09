@@ -8,17 +8,17 @@ import (
 // LineageResult describes the comparison between a trusted source model
 // and a candidate GGUF, accounting for expected quantization loss.
 type LineageResult struct {
-	SourceHash     string        `json:"source_hash"`
-	CandidateHash  string        `json:"candidate_hash"`
-	SameStructure  bool          `json:"same_structure"`
-	SourceQuant    string        `json:"source_quant"`
-	CandidateQuant string        `json:"candidate_quant"`
-	TotalTensors   int           `json:"total_tensors"`
-	AnalyzedTensors int          `json:"analyzed_tensors"`
-	ExpectedDrift  []TensorDrift `json:"expected_drift,omitempty"`
+	SourceHash      string        `json:"source_hash"`
+	CandidateHash   string        `json:"candidate_hash"`
+	SameStructure   bool          `json:"same_structure"`
+	SourceQuant     string        `json:"source_quant"`
+	CandidateQuant  string        `json:"candidate_quant"`
+	TotalTensors    int           `json:"total_tensors"`
+	AnalyzedTensors int           `json:"analyzed_tensors"`
+	ExpectedDrift   []TensorDrift `json:"expected_drift,omitempty"`
 	UnexpectedDrift []TensorDrift `json:"unexpected_drift,omitempty"`
-	Summary        string        `json:"summary"`
-	Verdict        string        `json:"verdict"` // "consistent", "suspicious", "incompatible"
+	Summary         string        `json:"summary"`
+	Verdict         string        `json:"verdict"` // "consistent", "suspicious", "incompatible"
 }
 
 // TensorDrift describes whether a tensor's deviation from the source
@@ -40,12 +40,12 @@ type QuantLossBudget struct {
 	MeanTolerance float64 // expected max |mean_delta| / |original_mean|
 	VarTolerance  float64 // expected max |var_delta| / original_var
 	KurtTolerance float64 // expected max |kurtosis_delta|
-	MaxDistance    float64 // max normalized distance for "expected" drift
+	MaxDistance   float64 // max normalized distance for "expected" drift
 }
 
 // DefaultQuantLossBudgets maps quantization type names to their expected loss budgets.
 var DefaultQuantLossBudgets = map[string]QuantLossBudget{
-	"F32":  {0.0, 0.0, 0.0, 0.0},    // identical
+	"F32":  {0.0, 0.0, 0.0, 0.0},     // identical
 	"F16":  {0.001, 0.005, 0.5, 0.5}, // very small loss
 	"BF16": {0.005, 0.02, 1.0, 1.0},
 	"Q8_0": {0.01, 0.05, 2.0, 2.0},

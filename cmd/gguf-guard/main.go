@@ -94,14 +94,14 @@ Run 'gguf-guard <command> --help' for command-specific flags.
 // --- scan ---
 
 type ScanOutput struct {
-	Model        string                   `json:"model"`
-	Fingerprint  *analysis.Fingerprint    `json:"fingerprint"`
-	Policy       *analysis.PolicyReport   `json:"policy,omitempty"`
-	Report       *analysis.AnomalyReport  `json:"report"`
-	QuantReport  *analysis.QuantReport    `json:"quant_report,omitempty"`
-	FamilyMatch  *analysis.FamilyMatch    `json:"family_match,omitempty"`
-	Stats        []*analysis.TensorStats  `json:"tensor_stats,omitempty"`
-	Elapsed      string                   `json:"elapsed"`
+	Model       string                  `json:"model"`
+	Fingerprint *analysis.Fingerprint   `json:"fingerprint"`
+	Policy      *analysis.PolicyReport  `json:"policy,omitempty"`
+	Report      *analysis.AnomalyReport `json:"report"`
+	QuantReport *analysis.QuantReport   `json:"quant_report,omitempty"`
+	FamilyMatch *analysis.FamilyMatch   `json:"family_match,omitempty"`
+	Stats       []*analysis.TensorStats `json:"tensor_stats,omitempty"`
+	Elapsed     string                  `json:"elapsed"`
 }
 
 func cmdScan(args []string) {
@@ -452,8 +452,8 @@ func cmdInspect(args []string) {
 	familyMatches := analysis.MatchFamily(gf)
 
 	type InspectOutput struct {
-		Policy        *analysis.PolicyReport  `json:"policy"`
-		FamilyMatches []analysis.FamilyMatch  `json:"family_matches"`
+		Policy        *analysis.PolicyReport `json:"policy"`
+		FamilyMatches []analysis.FamilyMatch `json:"family_matches"`
 	}
 
 	writeJSON(InspectOutput{
