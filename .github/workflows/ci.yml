@@ -39,4 +39,4 @@ jobs:
         run: go vet ./...
 
       - name: Format check
-        run: test -z "$(gofmt -l .)"
+        run: test -z "$(gofmt -s -l .)"
