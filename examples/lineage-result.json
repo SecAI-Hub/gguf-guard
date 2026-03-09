@@ -1,0 +1,12 @@
+{
+  "verdict": "consistent",
+  "analyzed_tensors": 291,
+  "quant_type": "Q4_K",
+  "loss_budget": {
+    "max_distance": 5.0,
+    "max_variance_shift": 1.5,
+    "max_kurtosis_shift": 15.0
+  },
+  "unexpected_drift": [],
+  "summary": "all 291 tensors within Q4_K quantization loss budget"
+}

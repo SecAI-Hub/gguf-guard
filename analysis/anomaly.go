@@ -54,6 +54,15 @@ type AnomalyReport struct {
 	Confidence string    `json:"confidence"`
 	Anomalies  []Anomaly `json:"anomalies"`
 	Summary    string    `json:"summary"`
+	Layers     *LayerScores `json:"layers,omitempty"`
+}
+
+// LayerScores breaks down suspiciousness by analysis layer.
+type LayerScores struct {
+	TensorLocal  float64 `json:"tensor_local"`  // per-tensor moment/outlier checks
+	RoleGroup    float64 `json:"role_group"`     // cross-layer consistency
+	ModelGlobal  float64 `json:"model_global"`   // overall distribution of suspicion
+	Reference    float64 `json:"reference"`      // deviation from reference profile
 }
 
 // DetectAnomalies runs all anomaly checks on a set of tensor statistics.
@@ -88,8 +97,43 @@ func DetectAnomalies(stats []*TensorStats, ref *ReferenceProfile) *AnomalyReport
 		report.Confidence = "high"
 	}
 
-	// Compute score: 0.0 (clean) to 1.0 (extremely suspicious)
-	report.Score = computeScore(report.Anomalies)
+	// Layered scoring
+	layers := &LayerScores{}
+	for _, a := range report.Anomalies {
+		w := severityWeight(a.Severity)
+		switch {
+		case strings.HasPrefix(a.Type, "cross_layer"):
+			layers.RoleGroup += w
+		case strings.HasPrefix(a.Type, "reference_"):
+			layers.Reference += w
+		default:
+			layers.TensorLocal += w
+		}
+	}
+
+	// Model-global check: if anomalies are concentrated in few tensors, that's more
+	// suspicious than being spread evenly (targeted attack pattern)
+	affectedTensors := make(map[string]int)
+	for _, a := range report.Anomalies {
+		affectedTensors[a.TensorName]++
+	}
+	if len(stats) > 0 && len(affectedTensors) > 0 {
+		concentration := float64(len(report.Anomalies)) / float64(len(affectedTensors))
+		if concentration > 3.0 {
+			layers.ModelGlobal = 0.2 // concentrated anomalies = more suspicious
+		}
+	}
+
+	// Cap layer scores
+	for _, ls := range []*float64{&layers.TensorLocal, &layers.RoleGroup, &layers.ModelGlobal, &layers.Reference} {
+		if *ls > 1.0 {
+			*ls = 1.0
+		}
+	}
+	report.Layers = layers
+
+	// Composite score from all layers
+	report.Score = computeLayeredScore(layers, report.Anomalies)
 
 	// Generate summary
 	critCount := countBySeverity(report.Anomalies, SeverityCritical)
@@ -106,6 +150,37 @@ func DetectAnomalies(stats []*TensorStats, ref *ReferenceProfile) *AnomalyReport
 	}
 
 	return report
+}
+
+func severityWeight(severity string) float64 {
+	switch severity {
+	case SeverityCritical:
+		return 0.3
+	case SeverityWarning:
+		return 0.1
+	case SeverityInfo:
+		return 0.02
+	}
+	return 0
+}
+
+func computeLayeredScore(layers *LayerScores, anomalies []Anomaly) float64 {
+	// Weighted combination of layer scores
+	score := layers.TensorLocal*0.3 +
+		layers.RoleGroup*0.25 +
+		layers.ModelGlobal*0.2 +
+		layers.Reference*0.25
+
+	// Also include the raw anomaly-based score as a floor
+	rawScore := computeScore(anomalies)
+	if rawScore > score {
+		score = rawScore
+	}
+
+	if score > 1.0 {
+		score = 1.0
+	}
+	return score
 }
 
 func checkTensorAnomalies(s *TensorStats, th *Thresholds) []Anomaly {
@@ -220,20 +295,23 @@ func checkCrossLayerConsistency(stats []*TensorStats, th *Thresholds) []Anomaly 
 	}
 
 	// For each group, check if any layer is a statistical outlier
+	// Uses both standard z-score and robust (median/MAD) z-score
 	for role, members := range groups {
 		if len(members) < 3 {
 			continue // need at least 3 layers for meaningful comparison
 		}
 
-		// Check mean consistency
+		// Check mean consistency using both standard and robust methods
 		means := make([]float64, len(members))
 		for i, m := range members {
 			means[i] = m.Mean
 		}
 		groupMean, groupStd := meanAndStd(means)
+		robustMeans := ComputeRobustStats(means)
 
-		if groupStd > 1e-10 {
-			for _, m := range members {
+		for _, m := range members {
+			// Standard z-score
+			if groupStd > 1e-10 {
 				dev := math.Abs(m.Mean-groupMean) / groupStd
 				if dev > th.CrossLayerMaxDev {
 					anomalies = append(anomalies, Anomaly{
@@ -245,6 +323,20 @@ func checkCrossLayerConsistency(stats []*TensorStats, th *Thresholds) []Anomaly 
 						Description: fmt.Sprintf("mean deviates %.1fσ from %s group (%.4f vs group mean %.4f)", dev, role, m.Mean, groupMean),
 					})
 				}
+			}
+
+			// Robust z-score (median/MAD) — catches outliers in heavy-tailed groups
+			// Skip when MAD ≈ 0: all values near-identical means no meaningful dispersion
+			robustZ := math.Abs(RobustZScore(m.Mean, robustMeans.Median, robustMeans.MAD))
+			if robustMeans.MAD > 1e-10 && robustZ > th.CrossLayerMaxDev {
+				anomalies = append(anomalies, Anomaly{
+					TensorName:  m.Name,
+					Type:        "cross_layer_robust_outlier",
+					Severity:    SeverityWarning,
+					Value:       robustZ,
+					Threshold:   th.CrossLayerMaxDev,
+					Description: fmt.Sprintf("mean deviates %.1f robust-σ from %s group median", robustZ, role),
+				})
 			}
 		}
 

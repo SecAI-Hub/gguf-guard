@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gguf-guard reference profile",
+  "type": "object",
+  "required": ["fingerprint", "tensor_profiles"],
+  "properties": {
+    "fingerprint": {
+      "type": "object",
+      "properties": {
+        "file_hash": { "type": "string" },
+        "structure_hash": { "type": "string" },
+        "quant_type": { "type": "string" },
+        "tensor_count": { "type": "integer" },
+        "total_parameters": { "type": "integer" },
+        "architecture": { "type": "string" }
+      }
+    },
+    "tensor_profiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "mean_range": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "variance_range": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "kurtosis_range": {
+            "type": "array",
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "properties": {
+        "max_abs_mean": { "type": "number" },
+        "max_kurtosis": { "type": "number" },
+        "min_variance": { "type": "number" },
+        "max_zero_fraction": { "type": "number" },
+        "max_outlier_ratio": { "type": "number" },
+        "max_nan_fraction": { "type": "number" },
+        "max_inf_fraction": { "type": "number" },
+        "cross_layer_max_dev": { "type": "number" }
+      }
+    },
+    "sample_count": {
+      "type": "integer",
+      "description": "Number of samples used to build this profile"
+    },
+    "source_hashes": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "File hashes of all samples used"
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "converter_version": { "type": "string" },
+        "llama_cpp_commit": { "type": "string" },
+        "quantizer_flags": { "type": "string" },
+        "imatrix": { "type": "string" }
+      }
+    }
+  }
+}

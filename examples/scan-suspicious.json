@@ -1,0 +1,74 @@
+{
+  "model": "tampered-model.gguf",
+  "fingerprint": {
+    "file_hash": "deadbeef12345678deadbeef12345678",
+    "structure_hash": "f1e2d3c4b5a6f7e8d9c0b1a2f3e4d5c6",
+    "quant_type": "Q4_K",
+    "tensor_count": 291,
+    "total_parameters": 6738415616,
+    "architecture": "llama"
+  },
+  "policy": {
+    "pass": true,
+    "violations": []
+  },
+  "report": {
+    "score": 0.7,
+    "confidence": "medium",
+    "anomalies": [
+      {
+        "tensor_name": "blk.15.attn_q.weight",
+        "type": "extreme_kurtosis",
+        "severity": "critical",
+        "value": 487.32,
+        "threshold": 100.0,
+        "description": "kurtosis 487.32 >> 100.0, possible localized perturbation"
+      },
+      {
+        "tensor_name": "blk.15.attn_q.weight",
+        "type": "cross_layer_outlier",
+        "severity": "warning",
+        "value": 8.2,
+        "threshold": 5.0,
+        "description": "mean deviates 8.2 sigma from attn_q.weight group (0.4521 vs group mean 0.0123)"
+      },
+      {
+        "tensor_name": "blk.15.attn_q.weight",
+        "type": "quant_repeated_blocks",
+        "severity": "critical",
+        "value": 0.42,
+        "threshold": 0.1,
+        "description": "high fraction of byte-identical quantization blocks"
+      }
+    ],
+    "summary": "3 anomalies (2 critical, 1 warning, 0 info) across 291 tensors",
+    "layers": {
+      "tensor_local": 0.3,
+      "role_group": 0.1,
+      "model_global": 0.2,
+      "reference": 0.0
+    }
+  },
+  "quant_report": {
+    "tensors_analyzed": 289,
+    "anomalies": [
+      {
+        "tensor_name": "blk.15.attn_q.weight",
+        "type": "repeated_blocks",
+        "severity": "critical",
+        "value": 0.42,
+        "threshold": 0.1,
+        "description": "high fraction of byte-identical quantization blocks"
+      }
+    ]
+  },
+  "family_match": {
+    "family": "llama",
+    "match_score": 0.95,
+    "matched_roles": 10,
+    "total_expected": 12,
+    "architecture_match": true,
+    "shape_violations": []
+  },
+  "elapsed": "2.51s"
+}

@@ -1,0 +1,43 @@
+# gguf-guard
+
+> Static analysis and integrity verification for GGUF model files
+
+gguf-guard is a Go CLI tool that detects weight-level anomalies, structural tampering, and quantization-aware attacks in GGUF model files without running inference.
+
+## Core Capabilities
+
+- Parses GGUF v2/v3 binary format (header, metadata, tensor info, data)
+- Dequantizes F32, F16, BF16, Q8_0, Q4_0, Q4_1 tensors to float32
+- Computes per-tensor statistics: mean, variance, stddev, kurtosis, skewness, percentiles, outlier ratio
+- Detects anomalies via four-layer scoring: tensor-local, role-group, model-global, reference
+- Analyzes raw quantization blocks (Q4_0, Q4_1, Q4_K, Q5_K, Q6_K, Q8_0) for scale/code entropy, repeated blocks, saturation
+- Uses robust statistics (median, MAD, trimmed mean, Tukey fences) to reduce false positives
+- Generates per-tensor SHA-256 integrity manifests with Merkle tree root
+- Validates structural policy (offsets, overlaps, metadata, tensor shapes)
+- Matches model families (llama, mistral, mixtral, qwen2, gemma, phi) by tensor naming/shape patterns
+- Compares quantized models against FP/BF16 source with per-format loss budgets
+
+## Architecture
+
+Three Go packages:
+
+- `gguf/` — binary parser, type definitions, dequantization, block-level extraction
+- `analysis/` — statistics, anomaly detection, robust stats, quant checks, reference profiles, manifests, policy, families, lineage, fingerprinting, comparison
+- `cmd/gguf-guard/` — CLI with 10 subcommands (scan, fingerprint, compare, profile, build-reference, lineage, manifest, verify-manifest, inspect, info)
+
+## Key Types
+
+- `gguf.File` — parsed GGUF file (header, metadata, tensors, data offset)
+- `gguf.TensorInfo` — name, dimensions, type, element count, offset
+- `gguf.BlockStats` — block-level quantization statistics
+- `analysis.TensorStats` — per-tensor statistical summary
+- `analysis.AnomalyReport` — score, confidence, anomalies, layer scores
+- `analysis.ReferenceProfile` — known-good tensor ranges with provenance
+- `analysis.Manifest` — per-tensor SHA-256 hashes with Merkle root
+- `analysis.PolicyReport` — structural validation pass/fail with violations
+- `analysis.FamilyMatch` — architecture match with score
+- `analysis.LineageResult` — source vs quantized comparison verdict
+
+## Scoring
+
+Score range 0.0 (clean) to 1.0 (suspicious). Layers: tensor-local (0.30), role-group (0.25), model-global (0.20), reference (0.25). Severity weights: critical +0.30, warning +0.10, info +0.02. Verdicts: PASS (<0.2), WARN (0.2-0.5), FAIL (>0.5).

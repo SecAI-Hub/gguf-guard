@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gguf-guard scan output",
+  "type": "object",
+  "required": ["model", "fingerprint", "report", "elapsed"],
+  "properties": {
+    "model": {
+      "type": "string",
+      "description": "Path to the scanned model file"
+    },
+    "fingerprint": {
+      "$ref": "#/$defs/fingerprint"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy_report"
+    },
+    "report": {
+      "$ref": "#/$defs/anomaly_report"
+    },
+    "quant_report": {
+      "$ref": "#/$defs/quant_report"
+    },
+    "family_match": {
+      "$ref": "#/$defs/family_match"
+    },
+    "tensor_stats": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/tensor_stats" },
+      "description": "Per-tensor statistics (only with --stats flag)"
+    },
+    "elapsed": {
+      "type": "string",
+      "description": "Scan duration"
+    }
+  },
+  "$defs": {
+    "fingerprint": {
+      "type": "object",
+      "required": ["file_hash", "structure_hash", "tensor_count"],
+      "properties": {
+        "file_hash": { "type": "string" },
+        "structure_hash": { "type": "string" },
+        "quant_type": { "type": "string" },
+        "tensor_count": { "type": "integer" },
+        "total_parameters": { "type": "integer" },
+        "architecture": { "type": "string" }
+      }
+    },
+    "anomaly_report": {
+      "type": "object",
+      "required": ["score", "confidence", "anomalies", "summary"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "confidence": { "type": "string", "enum": ["high", "medium", "low", "insufficient-data"] },
+        "anomalies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/anomaly" }
+        },
+        "summary": { "type": "string" },
+        "layers": {
+          "type": "object",
+          "properties": {
+            "tensor_local": { "type": "number" },
+            "role_group": { "type": "number" },
+            "model_global": { "type": "number" },
+            "reference": { "type": "number" }
+          }
+        }
+      }
+    },
+    "anomaly": {
+      "type": "object",
+      "required": ["type", "severity"],
+      "properties": {
+        "tensor_name": { "type": "string" },
+        "type": { "type": "string" },
+        "severity": { "type": "string", "enum": ["critical", "warning", "info"] },
+        "value": { "type": "number" },
+        "threshold": { "type": "number" },
+        "description": { "type": "string" }
+      }
+    },
+    "quant_report": {
+      "type": "object",
+      "properties": {
+        "tensors_analyzed": { "type": "integer" },
+        "anomalies": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/anomaly" }
+        }
+      }
+    },
+    "policy_report": {
+      "type": "object",
+      "required": ["pass"],
+      "properties": {
+        "pass": { "type": "boolean" },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": "string" },
+              "severity": { "type": "string" },
+              "description": { "type": "string" },
+              "tensor_name": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "family_match": {
+      "type": "object",
+      "properties": {
+        "family": { "type": "string" },
+        "match_score": { "type": "number" },
+        "matched_roles": { "type": "integer" },
+        "total_expected": { "type": "integer" },
+        "architecture_match": { "type": "boolean" },
+        "shape_violations": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "tensor_stats": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "samples": { "type": "integer" },
+        "mean": { "type": "number" },
+        "variance": { "type": "number" },
+        "std_dev": { "type": "number" },
+        "kurtosis": { "type": "number" },
+        "skewness": { "type": "number" },
+        "outlier_ratio": { "type": "number" },
+        "zero_fraction": { "type": "number" }
+      }
+    }
+  }
+}

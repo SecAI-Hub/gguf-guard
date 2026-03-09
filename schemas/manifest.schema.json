@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "gguf-guard integrity manifest",
+  "type": "object",
+  "required": ["version", "file_hash", "structure_hash", "tensors", "merkle_root"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1
+    },
+    "file_hash": {
+      "type": "string",
+      "description": "SHA-256 hash of the entire GGUF file"
+    },
+    "structure_hash": {
+      "type": "string",
+      "description": "Deterministic hash of tensor names, shapes, and types"
+    },
+    "tensors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "hash"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Tensor name"
+          },
+          "hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "description": "SHA-256 hash of the tensor's raw data"
+          }
+        }
+      }
+    },
+    "merkle_root": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Merkle tree root computed from tensor hashes"
+    }
+  }
+}
