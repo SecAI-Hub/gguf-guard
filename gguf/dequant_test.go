@@ -147,12 +147,29 @@ func TestDequantUnsupported(t *testing.T) {
 }
 
 func TestDequantEmptyData(t *testing.T) {
-	vals, err := Dequantize([]byte{}, TypeF32, 0)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if _, err := Dequantize([]byte{}, TypeF32, 0); err == nil {
+		t.Fatal("empty tensor data must fail closed")
 	}
-	if len(vals) != 0 {
-		t.Errorf("expected empty, got %d values", len(vals))
+}
+
+func TestDequantRejectsPartialBlock(t *testing.T) {
+	if _, err := Dequantize(make([]byte, 5), TypeF32, 0); err == nil {
+		t.Fatal("partial storage block must be rejected")
+	}
+}
+
+func TestDequantQ8_1(t *testing.T) {
+	data := make([]byte, 36)
+	binary.LittleEndian.PutUint16(data[0:], 0x3C00)
+	for i := 4; i < len(data); i++ {
+		data[i] = 2
+	}
+	values, err := Dequantize(data, TypeQ8_1, 0)
+	if err != nil {
+		t.Fatalf("dequantize Q8_1: %v", err)
+	}
+	if len(values) != 32 || values[0] != 2 || values[31] != 2 {
+		t.Fatalf("unexpected Q8_1 values: len=%d first=%v last=%v", len(values), values[0], values[len(values)-1])
 	}
 }
 

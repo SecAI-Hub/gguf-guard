@@ -57,6 +57,25 @@ func TestExtractBlockStatsQ4_0(t *testing.T) {
 	}
 }
 
+func TestExtractBlockStatsAdditionalFormats(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		typeID GGMLType
+		size   int
+	}{
+		{"Q8_1", TypeQ8_1, 36},
+		{"Q5_0", TypeQ5_0, 22},
+		{"Q5_1", TypeQ5_1, 24},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stats := ExtractBlockStats(make([]byte, test.size), "tensor", test.typeID)
+			if stats == nil || stats.NumBlocks != 1 || stats.QuantType != test.name {
+				t.Fatalf("unexpected block stats: %#v", stats)
+			}
+		})
+	}
+}
+
 func TestExtractBlockStatsReturnsNilForF32(t *testing.T) {
 	bs := ExtractBlockStats([]byte{0, 0, 0, 0}, "test", TypeF32)
 	if bs != nil {

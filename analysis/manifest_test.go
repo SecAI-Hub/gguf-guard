@@ -1,8 +1,10 @@
 package analysis
 
 import (
+	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/SecAI-Hub/gguf-guard/gguf"
@@ -57,20 +59,44 @@ func TestGenerateAndVerifyManifest(t *testing.T) {
 	}
 }
 
+func TestGenerateManifestRejectsMismatchedFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	path := createTestGGUF(t, dir, "model.gguf", []gguf.TensorInfo{
+		{Name: "a", NDims: 1, Dims: []uint64{4}, Type: gguf.TypeF32, ElementCount: 4},
+	}, map[string]any{})
+	gf, err := gguf.Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, err := GenerateFingerprint(gf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp.StructureHash = strings.Repeat("0", 64)
+	if _, err := GenerateManifest(gf, fp); err == nil {
+		t.Fatal("mismatched fingerprint must be rejected")
+	}
+}
+
 func TestSaveLoadManifest(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.json")
 
 	m := &Manifest{
 		Version:       "1.0",
-		FileHash:      "abc123",
-		StructureHash: "xyz",
+		FileHash:      strings.Repeat("a", 64),
+		StructureHash: strings.Repeat("b", 64),
+		Architecture:  "test",
+		QuantType:     "F32",
 		TensorCount:   1,
-		MerkleRoot:    "root",
+		Parameters:    16,
+		FileSize:      128,
 		Tensors: []TensorEntry{
-			{Name: "weight", Hash: "deadbeef", DataSize: 64},
+			{Name: "weight", Type: "F32", Shape: []uint64{4, 4}, Hash: strings.Repeat("c", 64), DataSize: 64, ElementCount: 16},
 		},
 	}
+	hashBytes, _ := hex.DecodeString(m.Tensors[0].Hash)
+	m.MerkleRoot = computeMerkleRoot([][]byte{hashBytes})
 
 	if err := SaveManifest(path, m); err != nil {
 		t.Fatalf("save: %v", err)
@@ -133,12 +159,11 @@ func TestVerifyManifestMismatch(t *testing.T) {
 
 	gf, _ := gguf.Parse(path)
 
-	// Manifest with wrong hash
-	m := &Manifest{
-		Tensors: []TensorEntry{
-			{Name: "a", Hash: "0000000000000000000000000000000000000000000000000000000000000000"},
-		},
-	}
+	fp, _ := GenerateFingerprint(gf)
+	m, _ := GenerateManifest(gf, fp)
+	m.Tensors[0].Hash = strings.Repeat("0", 64)
+	badHash, _ := hex.DecodeString(m.Tensors[0].Hash)
+	m.MerkleRoot = computeMerkleRoot([][]byte{badHash})
 
 	mismatches, err := VerifyManifest(gf, m)
 	if err != nil {
@@ -158,15 +183,80 @@ func TestVerifyManifestMissingTensor(t *testing.T) {
 
 	gf, _ := gguf.Parse(path)
 
-	// Empty manifest
-	m := &Manifest{Tensors: []TensorEntry{}}
+	fp, _ := GenerateFingerprint(gf)
+	m, _ := GenerateManifest(gf, fp)
+	m.Tensors[0].Name = "different"
 
 	mismatches, err := VerifyManifest(gf, m)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if len(mismatches) != 1 {
-		t.Errorf("mismatches = %d, want 1", len(mismatches))
+	if len(mismatches) != 2 {
+		t.Errorf("mismatches = %d, want 2", len(mismatches))
+	}
+}
+
+func TestVerifyManifestRejectsRemovedTensor(t *testing.T) {
+	dir := t.TempDir()
+	originalPath := createTestGGUF(t, dir, "original.gguf", []gguf.TensorInfo{
+		{Name: "a", NDims: 1, Dims: []uint64{4}, Type: gguf.TypeF32, ElementCount: 4},
+		{Name: "b", NDims: 1, Dims: []uint64{4}, Type: gguf.TypeF32, ElementCount: 4},
+	}, map[string]any{})
+	original, err := gguf.Parse(originalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp, err := GenerateFingerprint(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := GenerateManifest(original, fp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	candidatePath := createTestGGUF(t, dir, "candidate.gguf", []gguf.TensorInfo{
+		{Name: "a", NDims: 1, Dims: []uint64{4}, Type: gguf.TypeF32, ElementCount: 4},
+	}, map[string]any{})
+	candidate, err := gguf.Parse(candidatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mismatches, err := VerifyManifest(candidate, manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mismatches) == 0 {
+		t.Fatal("removed tensor must fail manifest verification")
+	}
+}
+
+func TestLoadManifestRejectsUnknownFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte(`{"manifest_version":"1.0","unexpected":true}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadManifest(path); err == nil {
+		t.Fatal("unknown manifest field must be rejected")
+	}
+}
+
+func TestSaveManifestRefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, []byte("preserve"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "manifest.json")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := SaveManifest(link, &Manifest{}); err == nil {
+		t.Fatal("symlink output must be rejected")
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "preserve" {
+		t.Fatal("symlink target was modified")
 	}
 }
 

@@ -70,7 +70,7 @@ type LayerScores struct {
 func DetectAnomalies(stats []*TensorStats, ref *ReferenceProfile) *AnomalyReport {
 	th := DefaultThresholds
 	if ref != nil && ref.Thresholds != nil {
-		th = *ref.Thresholds
+		th = tightenedThresholds(*ref.Thresholds)
 	}
 
 	report := &AnomalyReport{
@@ -97,6 +97,20 @@ func DetectAnomalies(stats []*TensorStats, ref *ReferenceProfile) *AnomalyReport
 		report.Confidence = "high"
 	}
 
+	FinalizeAnomalyReport(report, len(stats))
+	return report
+}
+
+// FinalizeAnomalyReport rebuilds all derived scores and summary fields after
+// callers add policy or quantization findings to a statistical report.
+func FinalizeAnomalyReport(report *AnomalyReport, tensorCount int) {
+	if report == nil {
+		return
+	}
+	if tensorCount < 0 {
+		tensorCount = 0
+	}
+
 	// Layered scoring
 	layers := &LayerScores{}
 	for _, a := range report.Anomalies {
@@ -115,9 +129,11 @@ func DetectAnomalies(stats []*TensorStats, ref *ReferenceProfile) *AnomalyReport
 	// suspicious than being spread evenly (targeted attack pattern)
 	affectedTensors := make(map[string]int)
 	for _, a := range report.Anomalies {
-		affectedTensors[a.TensorName]++
+		if a.TensorName != "" {
+			affectedTensors[a.TensorName]++
+		}
 	}
-	if len(stats) > 0 && len(affectedTensors) > 0 {
+	if tensorCount > 0 && len(affectedTensors) > 0 {
 		concentration := float64(len(report.Anomalies)) / float64(len(affectedTensors))
 		if concentration > 3.0 {
 			layers.ModelGlobal = 0.2 // concentrated anomalies = more suspicious
@@ -141,15 +157,45 @@ func DetectAnomalies(stats []*TensorStats, ref *ReferenceProfile) *AnomalyReport
 	infoCount := countBySeverity(report.Anomalies, SeverityInfo)
 
 	if len(report.Anomalies) == 0 {
-		report.Summary = fmt.Sprintf("no anomalies detected across %d tensors", len(stats))
+		report.Summary = fmt.Sprintf("no anomalies detected across %d tensors", tensorCount)
 	} else {
 		report.Summary = fmt.Sprintf(
 			"%d anomalies (%d critical, %d warning, %d info) across %d tensors",
-			len(report.Anomalies), critCount, warnCount, infoCount, len(stats),
+			len(report.Anomalies), critCount, warnCount, infoCount, tensorCount,
 		)
 	}
+}
 
-	return report
+func validateThresholds(th Thresholds) error {
+	values := []float64{th.MaxAbsMean, th.MaxKurtosis, th.MinVariance, th.MaxZeroFraction,
+		th.MaxOutlierRatio, th.MaxNaNFraction, th.MaxInfFraction, th.CrossLayerMaxDev}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("reference thresholds must be finite")
+		}
+	}
+	if th.MaxAbsMean <= 0 || th.MaxKurtosis <= 0 || th.MinVariance < 0 ||
+		th.MaxZeroFraction < 0 || th.MaxZeroFraction > 1 ||
+		th.MaxOutlierRatio < 0 || th.MaxOutlierRatio > 1 ||
+		th.MaxNaNFraction < 0 || th.MaxNaNFraction > 1 ||
+		th.MaxInfFraction < 0 || th.MaxInfFraction > 1 || th.CrossLayerMaxDev <= 0 {
+		return fmt.Errorf("reference thresholds are outside supported ranges")
+	}
+	return nil
+}
+
+// Reference files can tighten global safety limits but cannot relax them.
+func tightenedThresholds(custom Thresholds) Thresholds {
+	return Thresholds{
+		MaxAbsMean:       math.Min(custom.MaxAbsMean, DefaultThresholds.MaxAbsMean),
+		MaxKurtosis:      math.Min(custom.MaxKurtosis, DefaultThresholds.MaxKurtosis),
+		MinVariance:      math.Max(custom.MinVariance, DefaultThresholds.MinVariance),
+		MaxZeroFraction:  math.Min(custom.MaxZeroFraction, DefaultThresholds.MaxZeroFraction),
+		MaxOutlierRatio:  math.Min(custom.MaxOutlierRatio, DefaultThresholds.MaxOutlierRatio),
+		MaxNaNFraction:   math.Min(custom.MaxNaNFraction, DefaultThresholds.MaxNaNFraction),
+		MaxInfFraction:   math.Min(custom.MaxInfFraction, DefaultThresholds.MaxInfFraction),
+		CrossLayerMaxDev: math.Min(custom.CrossLayerMaxDev, DefaultThresholds.CrossLayerMaxDev),
+	}
 }
 
 func severityWeight(severity string) float64 {
@@ -387,6 +433,10 @@ func checkAgainstReference(stats []*TensorStats, ref *ReferenceProfile) []Anomal
 	for _, s := range stats {
 		tp, ok := ref.TensorProfiles[s.Name]
 		if !ok {
+			anomalies = append(anomalies, Anomaly{
+				TensorName: s.Name, Type: "reference_profile_missing", Severity: SeverityWarning,
+				Description: "tensor is not covered by the supplied reference profile",
+			})
 			continue
 		}
 

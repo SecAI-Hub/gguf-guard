@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -54,6 +55,7 @@ func writeTestGGUF(t *testing.T, dir string, tensors []TensorInfo, metadata map[
 	var dataOffset uint64
 	offsets := make([]uint64, len(tensors))
 	for i, ti := range tensors {
+		dataOffset = (dataOffset + 31) &^ 31
 		offsets[i] = dataOffset
 		dataOffset += uint64(ti.ByteSize())
 	}
@@ -77,9 +79,7 @@ func writeTestGGUF(t *testing.T, dir string, tensors []TensorInfo, metadata map[
 	}
 
 	// Write tensor data (zeros for simplicity — individual tests write specific values)
-	for _, ti := range tensors {
-		f.Write(make([]byte, ti.ByteSize()))
-	}
+	f.Write(make([]byte, dataOffset))
 
 	return path
 }
@@ -98,6 +98,75 @@ func TestParseMagic(t *testing.T) {
 	_, err := Parse(bad)
 	if err == nil {
 		t.Fatal("expected error for invalid magic")
+	}
+}
+
+func TestParseRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestGGUF(t, dir, []TensorInfo{{Name: "a", NDims: 1, Dims: []uint64{1}, Type: TypeF32, ElementCount: 1}}, nil)
+	link := filepath.Join(dir, "linked.gguf")
+	if err := os.Symlink(path, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := Parse(link); err == nil {
+		t.Fatal("symlink GGUF input must be rejected")
+	}
+}
+
+func TestParseRejectsModelWithoutTensors(t *testing.T) {
+	path := writeTestGGUF(t, t.TempDir(), nil, map[string]any{"general.architecture": "llama"})
+	if _, err := Parse(path); err == nil {
+		t.Fatal("metadata-only GGUF must not be accepted as a model")
+	}
+}
+
+func TestParseRejectsOverlappingTensors(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overlap.gguf")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(Magic[:])
+	binary.Write(f, binary.LittleEndian, uint32(3))
+	binary.Write(f, binary.LittleEndian, uint64(2))
+	binary.Write(f, binary.LittleEndian, uint64(0))
+	for _, name := range []string{"a", "b"} {
+		writeGGUFString(f, name)
+		binary.Write(f, binary.LittleEndian, uint32(1))
+		binary.Write(f, binary.LittleEndian, uint64(4))
+		binary.Write(f, binary.LittleEndian, uint32(TypeF32))
+		binary.Write(f, binary.LittleEndian, uint64(0))
+	}
+	pos, _ := f.Seek(0, 1)
+	padding := (32 - (pos % 32)) % 32
+	f.Write(make([]byte, padding+16))
+	f.Close()
+	if _, err := Parse(path); err == nil {
+		t.Fatal("overlapping tensor ranges must be rejected")
+	}
+}
+
+func TestParseRejectsDimensionOverflow(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "overflow.gguf")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(Magic[:])
+	binary.Write(f, binary.LittleEndian, uint32(3))
+	binary.Write(f, binary.LittleEndian, uint64(1))
+	binary.Write(f, binary.LittleEndian, uint64(0))
+	writeGGUFString(f, "overflow")
+	binary.Write(f, binary.LittleEndian, uint32(2))
+	binary.Write(f, binary.LittleEndian, ^uint64(0))
+	binary.Write(f, binary.LittleEndian, uint64(2))
+	binary.Write(f, binary.LittleEndian, uint32(TypeF32))
+	binary.Write(f, binary.LittleEndian, uint64(0))
+	f.Close()
+	if _, err := Parse(path); err == nil {
+		t.Fatal("dimension multiplication overflow must be rejected")
 	}
 }
 
@@ -201,6 +270,66 @@ func TestReadTensorData(t *testing.T) {
 	}
 }
 
+func TestReadTensorSampleCoversWholeTensor(t *testing.T) {
+	dir := t.TempDir()
+	ti := TensorInfo{Name: "sample", NDims: 1, Dims: []uint64{256}, Type: TypeF32, ElementCount: 256}
+	path := writeTestGGUF(t, dir, []TensorInfo{ti}, map[string]any{})
+	initial, err := Parse(path)
+	if err != nil {
+		t.Fatalf("initial parse: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 256; i++ {
+		var value [4]byte
+		binary.LittleEndian.PutUint32(value[:], math.Float32bits(float32(i)))
+		if _, err := f.WriteAt(value[:], initial.DataOffset+int64(i*4)); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	gf, err := Parse(path)
+	if err != nil {
+		t.Fatalf("parse populated tensor: %v", err)
+	}
+	data, err := ReadTensorSample(gf, &gf.Tensors[0], 8)
+	if err != nil {
+		t.Fatalf("sample: %v", err)
+	}
+	values, err := Dequantize(data, TypeF32, 0)
+	if err != nil {
+		t.Fatalf("decode sample: %v", err)
+	}
+	if len(values) != 8 || values[0] != 0 || values[len(values)-1] != 255 {
+		t.Fatalf("sample did not cover tensor endpoints: %v", values)
+	}
+}
+
+func TestBoundedSampleBlocksCapsUntrustedCallerRequest(t *testing.T) {
+	got := boundedSampleBlocks(^uint64(0), ^uint64(0), 1, 4)
+	want := maxTensorSampleBytes / 4
+	if got != want {
+		t.Fatalf("sample block cap = %d, want %d", got, want)
+	}
+	if got*4 > maxTensorSampleBytes {
+		t.Fatalf("sample cap permits %d bytes", got*4)
+	}
+}
+
+func TestParseRejectsOversizedTensorName(t *testing.T) {
+	ti := TensorInfo{Name: strings.Repeat("x", maxTensorNameLen+1), NDims: 1, Dims: []uint64{1}, Type: TypeF32, ElementCount: 1}
+	path := writeTestGGUF(t, t.TempDir(), []TensorInfo{ti}, nil)
+	if _, err := Parse(path); err == nil {
+		t.Fatal("oversized tensor name must be rejected")
+	}
+}
+
 func TestF16ToF32(t *testing.T) {
 	tests := []struct {
 		name string
@@ -259,8 +388,8 @@ func TestBF16ToF32(t *testing.T) {
 func TestQuantType(t *testing.T) {
 	dir := t.TempDir()
 	tensors := []TensorInfo{
-		{Name: "a", NDims: 1, Dims: []uint64{32}, Type: TypeQ4_K, ElementCount: 32},
-		{Name: "b", NDims: 1, Dims: []uint64{32}, Type: TypeQ4_K, ElementCount: 32},
+		{Name: "a", NDims: 1, Dims: []uint64{256}, Type: TypeQ4_K, ElementCount: 256},
+		{Name: "b", NDims: 1, Dims: []uint64{256}, Type: TypeQ4_K, ElementCount: 256},
 		{Name: "c", NDims: 1, Dims: []uint64{4}, Type: TypeF32, ElementCount: 4},
 	}
 	path := writeTestGGUF(t, dir, tensors, map[string]any{})

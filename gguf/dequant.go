@@ -9,6 +9,16 @@ import (
 // Dequantize converts raw quantized tensor bytes into float32 values.
 // For large tensors, pass maxElements > 0 to sample evenly across the data.
 func Dequantize(data []byte, qtype GGMLType, maxElements int) ([]float32, error) {
+	info, ok := typeInfoMap[qtype]
+	if !ok || info.TypeSize <= 0 {
+		return nil, fmt.Errorf("dequantization not supported for type %s", qtype)
+	}
+	if maxElements < 0 {
+		return nil, fmt.Errorf("maxElements must not be negative")
+	}
+	if len(data) == 0 || len(data)%info.TypeSize != 0 {
+		return nil, fmt.Errorf("%s data length %d is not a positive multiple of block size %d", qtype, len(data), info.TypeSize)
+	}
 	switch qtype {
 	case TypeF32:
 		return dequantF32(data, maxElements)
@@ -18,6 +28,8 @@ func Dequantize(data []byte, qtype GGMLType, maxElements int) ([]float32, error)
 		return dequantBF16(data, maxElements)
 	case TypeQ8_0:
 		return dequantQ8_0(data, maxElements)
+	case TypeQ8_1:
+		return dequantQ8_1(data, maxElements)
 	case TypeQ4_0:
 		return dequantQ4_0(data, maxElements)
 	case TypeQ4_1:
@@ -35,6 +47,28 @@ func Dequantize(data []byte, qtype GGMLType, maxElements int) ([]float32, error)
 	default:
 		return nil, fmt.Errorf("dequantization not supported for type %s", qtype)
 	}
+}
+
+// Q8_1: 36 bytes per block of 32 (2-byte scale, 2-byte sum, 32 int8 quants).
+// The stored sum is an optimization hint; reconstruction uses scale * quant.
+func dequantQ8_1(data []byte, maxElements int) ([]float32, error) {
+	const blockSize = 36
+	const elemsPerBlock = 32
+	nBlocks := len(data) / blockSize
+	step := blockStepSize(nBlocks, elemsPerBlock, maxElements)
+	out := make([]float32, 0, nBlocks*elemsPerBlock/step)
+	for bi := 0; bi < nBlocks; bi++ {
+		off := bi * blockSize
+		d := F16ToF32(binary.LittleEndian.Uint16(data[off:]))
+		for qi := 0; qi < elemsPerBlock; qi++ {
+			idx := bi*elemsPerBlock + qi
+			if step > 1 && idx%step != 0 {
+				continue
+			}
+			out = append(out, d*float32(int8(data[off+4+qi])))
+		}
+	}
+	return out, nil
 }
 
 func dequantF32(data []byte, maxElements int) ([]float32, error) {
@@ -213,9 +247,10 @@ func dequantQ5_0(data []byte, maxElements int) ([]float32, error) {
 			} else {
 				q = data[off+6+byteIdx] >> 4
 			}
-			// Add the 5th bit from qh
-			hiBit := uint8((qh >> uint(qi)) & 1)
-			q |= hiBit << 4
+			// Add the 5th bit from qh without a narrowing conversion.
+			if (qh>>qi)&1 != 0 {
+				q |= 0x10
+			}
 			out = append(out, d*(float32(q)-16.0))
 		}
 	}
@@ -251,8 +286,9 @@ func dequantQ5_1(data []byte, maxElements int) ([]float32, error) {
 			} else {
 				q = data[off+8+byteIdx] >> 4
 			}
-			hiBit := uint8((qh >> uint(qi)) & 1)
-			q |= hiBit << 4
+			if (qh>>qi)&1 != 0 {
+				q |= 0x10
+			}
 			out = append(out, d*float32(q)+m)
 		}
 	}
@@ -355,9 +391,10 @@ func dequantQ5_K(data []byte, maxElements int) ([]float32, error) {
 				} else {
 					q = qs[qOff] >> 4
 				}
-				// 5th bit from qh
-				hiBit := uint8((qh[elemIdx/8] >> uint(elemIdx%8)) & 1)
-				q |= hiBit << 4
+				// 5th bit from qh.
+				if (qh[elemIdx/8]>>(elemIdx%8))&1 != 0 {
+					q |= 0x10
+				}
 				out = append(out, sc*float32(q)-m)
 			}
 		}
@@ -405,7 +442,7 @@ func dequantQ6_K(data []byte, maxElements int) ([]float32, error) {
 
 				// High 2 bits from qh (64 bytes, 4 values per byte)
 				qhIdx := elemIdx / 4
-				qhShift := uint(elemIdx%4) * 2
+				qhShift := (elemIdx % 4) * 2
 				hi := (qh[qhIdx] >> qhShift) & 0x03
 
 				q := lo | (hi << 4)

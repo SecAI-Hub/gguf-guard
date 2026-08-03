@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -37,6 +35,9 @@ type TensorBrief struct {
 
 // GenerateFingerprint creates a structural fingerprint of a GGUF file.
 func GenerateFingerprint(gf *gguf.File) (*Fingerprint, error) {
+	if gf == nil {
+		return nil, fmt.Errorf("GGUF file is required")
+	}
 	fp := &Fingerprint{
 		Architecture:   gf.Architecture(),
 		QuantType:      gf.QuantType(),
@@ -47,7 +48,7 @@ func GenerateFingerprint(gf *gguf.File) (*Fingerprint, error) {
 	}
 
 	// File hash (full SHA256)
-	fileHash, err := hashFile(gf.Path)
+	fileHash, err := gguf.HashFile(gf)
 	if err != nil {
 		return nil, fmt.Errorf("file hash: %w", err)
 	}
@@ -94,18 +95,4 @@ func computeStructureHash(tensors []gguf.TensorInfo) string {
 		h.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }

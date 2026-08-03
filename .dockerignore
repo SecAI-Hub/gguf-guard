@@ -1,0 +1,7 @@
+.git
+.github
+*.md
+SECURITY_AUDIT.md
+gguf-guard
+coverage.out
+dist

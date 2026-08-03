@@ -4,7 +4,11 @@
 // used by llama.cpp and compatible inference engines.
 package gguf
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+	"os"
+)
 
 // GGMLType represents a GGML tensor data type.
 type GGMLType uint32
@@ -93,7 +97,7 @@ func (t GGMLType) Supported() bool {
 	switch t {
 	case TypeF32, TypeF16, TypeBF16,
 		TypeQ4_0, TypeQ4_1, TypeQ5_0, TypeQ5_1,
-		TypeQ8_0, TypeQ4_K, TypeQ5_K, TypeQ6_K:
+		TypeQ8_0, TypeQ8_1, TypeQ4_K, TypeQ5_K, TypeQ6_K:
 		return true
 	}
 	return false
@@ -131,6 +135,7 @@ type File struct {
 	Tensors     []TensorInfo
 	DataOffset  int64 // byte offset where tensor data begins
 	FileSize    int64
+	sourceInfo  os.FileInfo
 }
 
 // TensorInfo holds metadata about a single tensor in the GGUF file.
@@ -155,6 +160,9 @@ func (f *File) Architecture() string {
 
 // QuantType returns the dominant quantization type across all tensors.
 func (f *File) QuantType() string {
+	if f == nil || len(f.Tensors) == 0 {
+		return "unknown"
+	}
 	counts := make(map[GGMLType]int)
 	for _, t := range f.Tensors {
 		counts[t.Type]++
@@ -162,7 +170,7 @@ func (f *File) QuantType() string {
 	var maxType GGMLType
 	var maxCount int
 	for t, c := range counts {
-		if c > maxCount {
+		if c > maxCount || (c == maxCount && t < maxType) {
 			maxCount = c
 			maxType = t
 		}
@@ -174,6 +182,9 @@ func (f *File) QuantType() string {
 func (f *File) TotalParameters() uint64 {
 	var total uint64
 	for _, t := range f.Tensors {
+		if ^uint64(0)-total < t.ElementCount {
+			return ^uint64(0)
+		}
 		total += t.ElementCount
 	}
 	return total
@@ -181,13 +192,25 @@ func (f *File) TotalParameters() uint64 {
 
 // ByteSize returns the size of a tensor's data in bytes.
 func (t *TensorInfo) ByteSize() int64 {
+	if t == nil {
+		return 0
+	}
 	info, ok := typeInfoMap[t.Type]
-	if !ok {
+	if !ok || info.BlockSize <= 0 || info.TypeSize <= 0 {
+		return 0
+	}
+	if t.ElementCount == 0 {
 		return 0
 	}
 	if info.BlockSize == 1 {
-		return int64(t.ElementCount) * int64(info.TypeSize)
+		if t.ElementCount > uint64(math.MaxInt64)/uint64(info.TypeSize) {
+			return 0
+		}
+		return int64(t.ElementCount) * int64(info.TypeSize) // #nosec G115 -- checked against MaxInt64 above
 	}
-	nBlocks := (int64(t.ElementCount) + int64(info.BlockSize) - 1) / int64(info.BlockSize)
-	return nBlocks * int64(info.TypeSize)
+	nBlocks := (t.ElementCount-1)/uint64(info.BlockSize) + 1
+	if nBlocks > uint64(math.MaxInt64)/uint64(info.TypeSize) {
+		return 0
+	}
+	return int64(nBlocks) * int64(info.TypeSize) // #nosec G115 -- checked against MaxInt64 above
 }

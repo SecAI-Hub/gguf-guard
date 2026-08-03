@@ -33,10 +33,16 @@ func ExtractBlockStats(data []byte, name string, qtype GGMLType) *BlockStats {
 	switch qtype {
 	case TypeQ8_0:
 		return extractQ8_0Blocks(data, name)
+	case TypeQ8_1:
+		return extractQ8_1Blocks(data, name)
 	case TypeQ4_0:
 		return extractQ4_0Blocks(data, name)
 	case TypeQ4_1:
 		return extractQ4_1Blocks(data, name)
+	case TypeQ5_0:
+		return extractQ5_0Blocks(data, name)
+	case TypeQ5_1:
+		return extractQ5_1Blocks(data, name)
 	case TypeQ4_K:
 		return extractQ4_KBlocks(data, name)
 	case TypeQ5_K:
@@ -46,6 +52,30 @@ func ExtractBlockStats(data []byte, name string, qtype GGMLType) *BlockStats {
 	default:
 		return nil // non-quantized or unsupported
 	}
+}
+
+func extractQ8_1Blocks(data []byte, name string) *BlockStats {
+	const blockSize = 36
+	const elemsPerBlock = 32
+	nBlocks := len(data) / blockSize
+	if nBlocks == 0 {
+		return nil
+	}
+	scales := make([]float32, nBlocks)
+	codeCounts := make([]int, 256)
+	for bi := 0; bi < nBlocks; bi++ {
+		off := bi * blockSize
+		scales[bi] = F16ToF32(binary.LittleEndian.Uint16(data[off:]))
+		for qi := 0; qi < elemsPerBlock; qi++ {
+			codeCounts[data[off+4+qi]]++
+		}
+	}
+	bs := buildBlockStats(name, "Q8_1", nBlocks, scales)
+	bs.CodeEntropy = shannonEntropy(codeCounts, nBlocks*elemsPerBlock)
+	bs.SaturationLow = float64(codeCounts[128]) / float64(nBlocks*elemsPerBlock)
+	bs.SaturationHigh = float64(codeCounts[127]) / float64(nBlocks*elemsPerBlock)
+	bs.RepeatedBlocks = countRepeatedBlocks(data, blockSize)
+	return bs
 }
 
 func extractQ8_0Blocks(data []byte, name string) *BlockStats {
@@ -136,6 +166,72 @@ func extractQ4_1Blocks(data []byte, name string) *BlockStats {
 	return bs
 }
 
+func extractQ5_0Blocks(data []byte, name string) *BlockStats {
+	const blockSize = 22
+	const elemsPerBlock = 32
+	nBlocks := len(data) / blockSize
+	if nBlocks == 0 {
+		return nil
+	}
+	scales := make([]float32, nBlocks)
+	codeCounts := make([]int, 32)
+	for bi := 0; bi < nBlocks; bi++ {
+		off := bi * blockSize
+		scales[bi] = F16ToF32(binary.LittleEndian.Uint16(data[off:]))
+		high := binary.LittleEndian.Uint32(data[off+2:])
+		for qi := 0; qi < elemsPerBlock; qi++ {
+			lowByte := data[off+6+qi/2]
+			code := lowByte & 0x0f
+			if qi%2 != 0 {
+				code = lowByte >> 4
+			}
+			if (high>>qi)&1 != 0 {
+				code |= 0x10
+			}
+			codeCounts[code]++
+		}
+	}
+	bs := buildBlockStats(name, "Q5_0", nBlocks, scales)
+	bs.CodeEntropy = shannonEntropy(codeCounts, nBlocks*elemsPerBlock)
+	bs.SaturationLow = float64(codeCounts[0]) / float64(nBlocks*elemsPerBlock)
+	bs.SaturationHigh = float64(codeCounts[31]) / float64(nBlocks*elemsPerBlock)
+	bs.RepeatedBlocks = countRepeatedBlocks(data, blockSize)
+	return bs
+}
+
+func extractQ5_1Blocks(data []byte, name string) *BlockStats {
+	const blockSize = 24
+	const elemsPerBlock = 32
+	nBlocks := len(data) / blockSize
+	if nBlocks == 0 {
+		return nil
+	}
+	scales := make([]float32, nBlocks)
+	codeCounts := make([]int, 32)
+	for bi := 0; bi < nBlocks; bi++ {
+		off := bi * blockSize
+		scales[bi] = F16ToF32(binary.LittleEndian.Uint16(data[off:]))
+		high := binary.LittleEndian.Uint32(data[off+4:])
+		for qi := 0; qi < elemsPerBlock; qi++ {
+			lowByte := data[off+8+qi/2]
+			code := lowByte & 0x0f
+			if qi%2 != 0 {
+				code = lowByte >> 4
+			}
+			if (high>>qi)&1 != 0 {
+				code |= 0x10
+			}
+			codeCounts[code]++
+		}
+	}
+	bs := buildBlockStats(name, "Q5_1", nBlocks, scales)
+	bs.CodeEntropy = shannonEntropy(codeCounts, nBlocks*elemsPerBlock)
+	bs.SaturationLow = float64(codeCounts[0]) / float64(nBlocks*elemsPerBlock)
+	bs.SaturationHigh = float64(codeCounts[31]) / float64(nBlocks*elemsPerBlock)
+	bs.RepeatedBlocks = countRepeatedBlocks(data, blockSize)
+	return bs
+}
+
 func extractQ4_KBlocks(data []byte, name string) *BlockStats {
 	const blockSize = 144
 	const elemsPerBlock = 256
@@ -210,8 +306,9 @@ func extractQ5_KBlocks(data []byte, name string) *BlockStats {
 				} else {
 					q = qs[qOff] >> 4
 				}
-				hiBit := uint8((qh[elemIdx/8] >> uint(elemIdx%8)) & 1)
-				q |= hiBit << 4
+				if (qh[elemIdx/8]>>(elemIdx%8))&1 != 0 {
+					q |= 0x10
+				}
 				codeCounts[q]++
 			}
 		}
@@ -251,7 +348,7 @@ func extractQ6_KBlocks(data []byte, name string) *BlockStats {
 				lo = ql[qlIdx] >> 4
 			}
 			qhIdx := elemIdx / 4
-			qhShift := uint(elemIdx%4) * 2
+			qhShift := (elemIdx % 4) * 2
 			hi := (qh[qhIdx] >> qhShift) & 0x03
 			q := lo | (hi << 4)
 			codeCounts[q]++
@@ -411,12 +508,15 @@ func ValidateBlockLayout(ti *TensorInfo, dataSize int64) error {
 	}
 
 	if info.BlockSize > 1 {
-		nBlocks := int64(ti.ElementCount) / int64(info.BlockSize)
-		remainder := int64(ti.ElementCount) % int64(info.BlockSize)
+		blockSize := uint64(info.BlockSize)
+		nBlocksU := ti.ElementCount / blockSize
+		remainder := ti.ElementCount % blockSize
 		if remainder != 0 {
 			return fmt.Errorf("tensor %q: element count %d not divisible by block size %d",
 				ti.Name, ti.ElementCount, info.BlockSize)
 		}
+		// A non-zero ByteSize above proves nBlocks*TypeSize fits int64.
+		nBlocks := int64(nBlocksU) // #nosec G115 -- ByteSize overflow validation precedes this conversion
 		expectedBytes := nBlocks * int64(info.TypeSize)
 		if expectedBytes != expectedSize {
 			return fmt.Errorf("tensor %q: size mismatch: %d blocks * %d = %d, but ByteSize() = %d",

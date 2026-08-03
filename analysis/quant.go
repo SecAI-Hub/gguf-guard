@@ -3,10 +3,13 @@
 package analysis
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/SecAI-Hub/gguf-guard/gguf"
 )
+
+const maxQuantAnalysisBytes int64 = 64 * 1024 * 1024
 
 // QuantAnomaly represents an anomaly detected in the block-level quantization structure.
 type QuantAnomaly struct {
@@ -53,6 +56,12 @@ func AnalyzeQuantBlocks(gf *gguf.File, includeStats bool) (*QuantReport, error) 
 
 // AnalyzeQuantBlocksWithThresholds runs quant-aware analysis with custom thresholds.
 func AnalyzeQuantBlocksWithThresholds(gf *gguf.File, includeStats bool, th QuantThresholds) (*QuantReport, error) {
+	if gf == nil {
+		return nil, fmt.Errorf("GGUF file is required")
+	}
+	if err := validateQuantThresholds(th); err != nil {
+		return nil, err
+	}
 	report := &QuantReport{}
 
 	for i := range gf.Tensors {
@@ -61,14 +70,16 @@ func AnalyzeQuantBlocksWithThresholds(gf *gguf.File, includeStats bool, th Quant
 			continue
 		}
 
-		data, err := gguf.ReadTensorData(gf, ti, 0)
+		maxBlocks := maxQuantAnalysisBytes / int64(ti.Type.TypeSize())
+		maxElements := int(maxBlocks * int64(ti.Type.BlockSize()))
+		data, err := gguf.ReadTensorSample(gf, ti, maxElements)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("read quantized tensor %q: %w", ti.Name, err)
 		}
 
 		bs := gguf.ExtractBlockStats(data, ti.Name, ti.Type)
 		if bs == nil {
-			continue
+			return nil, fmt.Errorf("extract quantization block statistics for %q", ti.Name)
 		}
 
 		report.TensorsAnalyzed++
@@ -81,6 +92,23 @@ func AnalyzeQuantBlocksWithThresholds(gf *gguf.File, includeStats bool, th Quant
 	}
 
 	return report, nil
+}
+
+func validateQuantThresholds(th QuantThresholds) error {
+	values := []float64{th.MinScaleEntropy, th.MaxScaleRatio, th.MinCodeEntropy,
+		th.MaxSaturationRatio, th.MaxRepeatedFraction, th.MaxZeroScaleFrac}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("quantization thresholds must be finite")
+		}
+	}
+	if th.MinScaleEntropy < 0 || th.MaxScaleRatio <= 0 || th.MinCodeEntropy < 0 ||
+		th.MaxSaturationRatio < 0 || th.MaxSaturationRatio > 1 ||
+		th.MaxRepeatedFraction < 0 || th.MaxRepeatedFraction > 1 ||
+		th.MaxZeroScaleFrac < 0 || th.MaxZeroScaleFrac > 1 {
+		return fmt.Errorf("quantization thresholds are outside supported ranges")
+	}
+	return nil
 }
 
 func checkQuantAnomalies(bs *gguf.BlockStats, th *QuantThresholds) []QuantAnomaly {

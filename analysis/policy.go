@@ -2,6 +2,8 @@ package analysis
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 
 	"github.com/SecAI-Hub/gguf-guard/gguf"
@@ -24,6 +26,11 @@ type PolicyReport struct {
 // These are cheap to compute and catch malformed or suspicious files early.
 func CheckStructuralPolicy(gf *gguf.File) *PolicyReport {
 	report := &PolicyReport{Pass: true}
+	if gf == nil {
+		report.addViolation("missing_file", SeverityCritical, "GGUF file is required")
+		report.Pass = false
+		return report
+	}
 
 	// 1. Version check
 	if gf.Version != 2 && gf.Version != 3 {
@@ -71,29 +78,39 @@ func checkTensorOverlaps(gf *gguf.File, report *PolicyReport) {
 	regions := make([]region, 0, len(gf.Tensors))
 	for _, t := range gf.Tensors {
 		size := t.ByteSize()
-		if size == 0 {
+		if size <= 0 {
 			report.addViolation("zero_size_tensor", SeverityWarning,
 				fmt.Sprintf("tensor %q has zero computed size", t.Name))
 			continue
 		}
-		start := gf.DataOffset + int64(t.Offset)
-		end := start + size
-		if end > gf.FileSize {
+		if gf.DataOffset < 0 || gf.FileSize < 0 || t.Offset > uint64(math.MaxInt64) {
+			report.addViolation("tensor_out_of_bounds", SeverityCritical,
+				fmt.Sprintf("tensor %q has an invalid offset", t.Name))
+			continue
+		}
+		relative := int64(t.Offset) // #nosec G115 -- explicitly bounded by MaxInt64 above
+		if relative > math.MaxInt64-gf.DataOffset {
+			report.addViolation("tensor_out_of_bounds", SeverityCritical,
+				fmt.Sprintf("tensor %q start offset overflows", t.Name))
+			continue
+		}
+		start := gf.DataOffset + relative
+		if start > gf.FileSize || size > gf.FileSize-start {
 			report.addViolation("tensor_out_of_bounds", SeverityCritical,
 				fmt.Sprintf("tensor %q extends beyond file (offset %d + size %d > file size %d)",
 					t.Name, start, size, gf.FileSize))
 			continue
 		}
+		end := start + size
 		regions = append(regions, region{t.Name, start, end})
 	}
 
-	// Check for overlaps (O(n^2) but tensor count is bounded)
-	for i := 0; i < len(regions); i++ {
-		for j := i + 1; j < len(regions); j++ {
-			if regions[i].start < regions[j].end && regions[j].start < regions[i].end {
-				report.addViolation("tensor_overlap", SeverityCritical,
-					fmt.Sprintf("tensors %q and %q overlap in file", regions[i].name, regions[j].name))
-			}
+	// Sort once so adversarial high tensor counts remain O(n log n).
+	sort.Slice(regions, func(i, j int) bool { return regions[i].start < regions[j].start })
+	for i := 1; i < len(regions); i++ {
+		if regions[i].start < regions[i-1].end {
+			report.addViolation("tensor_overlap", SeverityCritical,
+				fmt.Sprintf("tensors %q and %q overlap in file", regions[i-1].name, regions[i].name))
 		}
 	}
 }

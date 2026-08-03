@@ -1,0 +1,22 @@
+# Local secrets and runtime state
+.env
+.env.*
+!.env.example
+*.token
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+credentials/
+*.db
+*.sqlite
+*.sqlite3
+
+# Local build and audit output
+/gguf-guard
+*.test
+coverage.out
+*.jsonl
+dist/
+.local/

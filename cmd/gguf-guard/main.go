@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/SecAI-Hub/gguf-guard/analysis"
@@ -117,6 +119,9 @@ func cmdScan(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: gguf-guard scan [flags] model.gguf")
 		os.Exit(1)
 	}
+	if *maxTensors < 0 {
+		fatal(fmt.Errorf("max-tensors must not be negative"), "flags")
+	}
 	modelPath := fs.Arg(0)
 	start := time.Now()
 
@@ -133,15 +138,18 @@ func cmdScan(args []string) {
 	familyMatch := analysis.BestFamilyMatch(gf)
 
 	// Dequantized statistics
-	stats := analyzeTensors(gf, *maxTensors)
+	stats, err := analyzeTensors(gf, *maxTensors)
+	fatal(err, "analyze tensors")
 
 	// Quant-aware block analysis
-	quantReport, _ := analysis.AnalyzeQuantBlocks(gf, false)
+	quantReport, err := analysis.AnalyzeQuantBlocks(gf, false)
+	fatal(err, "analyze quantization blocks")
 
 	var ref *analysis.ReferenceProfile
 	if *refPath != "" {
 		ref, err = analysis.LoadReference(*refPath)
 		fatal(err, "load reference")
+		fatal(analysis.ValidateReferenceMatch(ref, fp), "match reference")
 	}
 
 	report := analysis.DetectAnomalies(stats, ref)
@@ -158,10 +166,6 @@ func cmdScan(args []string) {
 				Description: qa.Description,
 			})
 		}
-		// Recalculate score with quant anomalies
-		if len(quantReport.Anomalies) > 0 {
-			report.Score = recomputeScore(report)
-		}
 	}
 
 	// Incorporate policy violations
@@ -173,18 +177,19 @@ func cmdScan(args []string) {
 				Description: pv.Description,
 			})
 		}
-		report.Score = recomputeScore(report)
 	}
+	analysis.FinalizeAnomalyReport(report, len(stats))
 
+	hasCritical := reportHasCritical(report)
 	if *quiet {
 		result := "PASS"
-		if report.Score > 0.5 {
+		if hasCritical || report.Score > 0.5 {
 			result = "FAIL"
 		} else if report.Score > 0.2 {
 			result = "WARN"
 		}
 		fmt.Printf("%s score=%.2f %s\n", result, report.Score, report.Summary)
-		if report.Score > 0.5 {
+		if hasCritical || report.Score > 0.5 {
 			os.Exit(2)
 		}
 		return
@@ -205,30 +210,9 @@ func cmdScan(args []string) {
 
 	writeJSON(out, *outPath)
 
-	if report.Score > 0.5 {
+	if hasCritical || report.Score > 0.5 {
 		os.Exit(2)
 	}
-}
-
-func recomputeScore(report *analysis.AnomalyReport) float64 {
-	score := 0.0
-	for _, a := range report.Anomalies {
-		switch a.Severity {
-		case "critical":
-			score += 0.3
-		case "warning":
-			score += 0.1
-		case "info":
-			score += 0.02
-		}
-	}
-	if score > 1.0 {
-		score = 1.0
-	}
-	if score > report.Score {
-		return score
-	}
-	return report.Score
 }
 
 // --- fingerprint ---
@@ -275,8 +259,13 @@ func cmdCompare(args []string) {
 	candFP, err := analysis.GenerateFingerprint(candGF)
 	fatal(err, "fingerprint candidate")
 
-	baseStats := analyzeTensors(baseGF, *maxTensors)
-	candStats := analyzeTensors(candGF, *maxTensors)
+	if *maxTensors < 0 {
+		fatal(fmt.Errorf("max-tensors must not be negative"), "flags")
+	}
+	baseStats, err := analyzeTensors(baseGF, *maxTensors)
+	fatal(err, "analyze baseline tensors")
+	candStats, err := analyzeTensors(candGF, *maxTensors)
+	fatal(err, "analyze candidate tensors")
 
 	result := analysis.Compare(baseStats, candStats, baseFP, candFP)
 	writeJSON(result, *outPath)
@@ -295,6 +284,9 @@ func cmdProfile(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: gguf-guard profile [flags] model.gguf")
 		os.Exit(1)
 	}
+	if *maxTensors < 0 || math.IsNaN(*margin) || math.IsInf(*margin, 0) || *margin <= 0 || *margin > 10 {
+		fatal(fmt.Errorf("max-tensors must be non-negative and margin must be in (0, 10]"), "flags")
+	}
 
 	gf, err := gguf.Parse(fs.Arg(0))
 	fatal(err, "parse")
@@ -302,8 +294,10 @@ func cmdProfile(args []string) {
 	fp, err := analysis.GenerateFingerprint(gf)
 	fatal(err, "fingerprint")
 
-	stats := analyzeTensors(gf, *maxTensors)
+	stats, err := analyzeTensors(gf, *maxTensors)
+	fatal(err, "analyze tensors")
 	ref := analysis.ProfileFromStats(stats, fp, *margin)
+	fatal(analysis.ValidateReference(ref), "validate reference")
 
 	writeJSON(ref, *outPath)
 }
@@ -321,6 +315,9 @@ func cmdBuildReference(args []string) {
 		fmt.Fprintln(os.Stderr, "usage: gguf-guard build-reference [flags] model1.gguf [model2.gguf ...]")
 		os.Exit(1)
 	}
+	if *maxTensors < 0 || math.IsNaN(*margin) || math.IsInf(*margin, 0) || *margin <= 0 || *margin > 10 {
+		fatal(fmt.Errorf("max-tensors must be non-negative and margin must be in (0, 10]"), "flags")
+	}
 
 	var profiles []*analysis.ReferenceProfile
 	for _, path := range fs.Args() {
@@ -328,7 +325,8 @@ func cmdBuildReference(args []string) {
 		fatal(err, "parse "+path)
 		fp, err := analysis.GenerateFingerprint(gf)
 		fatal(err, "fingerprint "+path)
-		stats := analyzeTensors(gf, *maxTensors)
+		stats, err := analyzeTensors(gf, *maxTensors)
+		fatal(err, "analyze tensors "+path)
 		ref := analysis.ProfileFromStats(stats, fp, *margin)
 		profiles = append(profiles, ref)
 		fmt.Fprintf(os.Stderr, "profiled: %s (%d tensors)\n", path, len(stats))
@@ -338,8 +336,16 @@ func cmdBuildReference(args []string) {
 	if len(profiles) == 1 {
 		result = profiles[0]
 	} else {
+		base := profiles[0]
+		for _, profile := range profiles[1:] {
+			if profile.Architecture != base.Architecture || profile.QuantType != base.QuantType ||
+				profile.StructureHash != base.StructureHash || profile.ParameterCount != base.ParameterCount {
+				fatal(fmt.Errorf("all reference inputs must have identical architecture, quantization, structure, and parameter count"), "merge references")
+			}
+		}
 		result = analysis.MergeProfiles(profiles, *margin)
 	}
+	fatal(analysis.ValidateReference(result), "validate merged reference")
 
 	writeJSON(result, *outPath)
 }
@@ -367,8 +373,13 @@ func cmdLineage(args []string) {
 	candFP, err := analysis.GenerateFingerprint(candGF)
 	fatal(err, "fingerprint candidate")
 
-	srcStats := analyzeTensors(srcGF, *maxTensors)
-	candStats := analyzeTensors(candGF, *maxTensors)
+	if *maxTensors < 0 {
+		fatal(fmt.Errorf("max-tensors must not be negative"), "flags")
+	}
+	srcStats, err := analyzeTensors(srcGF, *maxTensors)
+	fatal(err, "analyze source tensors")
+	candStats, err := analyzeTensors(candGF, *maxTensors)
+	fatal(err, "analyze candidate tensors")
 
 	result := analysis.CompareLineage(srcStats, candStats, srcFP, candFP)
 	writeJSON(result, *outPath)
@@ -515,7 +526,10 @@ func cmdInfo(args []string) {
 // --- helpers ---
 
 // analyzeTensors reads, dequantizes, and computes statistics for each tensor.
-func analyzeTensors(gf *gguf.File, maxTensors int) []*analysis.TensorStats {
+func analyzeTensors(gf *gguf.File, maxTensors int) ([]*analysis.TensorStats, error) {
+	if gf == nil || maxTensors < 0 {
+		return nil, fmt.Errorf("invalid GGUF file or tensor limit")
+	}
 	tensors := gf.Tensors
 	if maxTensors > 0 && len(tensors) > maxTensors {
 		tensors = tensors[:maxTensors]
@@ -528,35 +542,39 @@ func analyzeTensors(gf *gguf.File, maxTensors int) []*analysis.TensorStats {
 		ti := &tensors[i]
 
 		if !ti.Type.Supported() {
-			stats = append(stats, &analysis.TensorStats{
-				Name:         ti.Name,
-				Type:         ti.Type.String(),
-				Shape:        ti.Dims,
-				ElementCount: ti.ElementCount,
-			})
-			continue
+			return nil, fmt.Errorf("tensor %q has unsupported type %s", ti.Name, ti.Type)
 		}
 
-		data, err := gguf.ReadTensorData(gf, ti, 0)
+		data, err := gguf.ReadTensorSample(gf, ti, maxSamples)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warn: skipping tensor %q: %v\n", ti.Name, err)
-			continue
+			return nil, fmt.Errorf("read tensor %q: %w", ti.Name, err)
 		}
 
 		values, err := gguf.Dequantize(data, ti.Type, maxSamples)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warn: dequant %q: %v\n", ti.Name, err)
-			continue
+			return nil, fmt.Errorf("dequantize tensor %q: %w", ti.Name, err)
 		}
 		if len(values) == 0 {
-			continue
+			return nil, fmt.Errorf("tensor %q produced no analyzable samples", ti.Name)
 		}
 
 		s := analysis.ComputeStats(values, ti.Name, ti.Type.String(), ti.Dims, ti.ElementCount)
 		stats = append(stats, s)
 	}
 
-	return stats
+	return stats, nil
+}
+
+func reportHasCritical(report *analysis.AnomalyReport) bool {
+	if report == nil {
+		return true
+	}
+	for _, anomaly := range report.Anomalies {
+		if anomaly.Severity == analysis.SeverityCritical {
+			return true
+		}
+	}
+	return false
 }
 
 func writeJSON(v any, outPath string) {
@@ -564,11 +582,54 @@ func writeJSON(v any, outPath string) {
 	fatal(err, "marshal JSON")
 
 	if outPath != "" {
-		err = os.WriteFile(outPath, append(data, '\n'), 0644)
+		err = writeFileAtomic(outPath, append(data, '\n'), 0644)
 		fatal(err, "write output file")
 	} else {
 		fmt.Println(string(data))
 	}
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to replace non-regular output: %s", info.Mode())
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	// #nosec G304 -- dir is the parent of an explicit CLI output path and is
+	// opened only to fsync the completed atomic rename.
+	dirHandle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer dirHandle.Close()
+	return dirHandle.Sync()
 }
 
 func fatal(err error, context string) {

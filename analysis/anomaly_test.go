@@ -3,6 +3,7 @@ package analysis
 import (
 	"fmt"
 	"math"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +30,15 @@ func TestDetectAnomaliesEmpty(t *testing.T) {
 	report := DetectAnomalies(nil, nil)
 	if report.Confidence != "insufficient-data" {
 		t.Errorf("confidence = %q, want insufficient-data", report.Confidence)
+	}
+}
+
+func TestFinalizeAnomalyReportRefreshesDerivedFields(t *testing.T) {
+	report := DetectAnomalies([]*TensorStats{{Name: "clean", Samples: 10, Variance: 1}}, nil)
+	report.Anomalies = append(report.Anomalies, Anomaly{Type: "policy_overlap", Severity: SeverityCritical})
+	FinalizeAnomalyReport(report, 1)
+	if report.Score < 0.3 || !strings.Contains(report.Summary, "1 critical") {
+		t.Fatalf("derived fields were not refreshed: score=%v summary=%q", report.Score, report.Summary)
 	}
 }
 

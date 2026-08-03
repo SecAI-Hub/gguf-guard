@@ -1,11 +1,11 @@
 package analysis
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
-	"os"
 )
+
+const maxReferenceBytes = 64 * 1024 * 1024
 
 // ReferenceProfile defines expected statistical ranges for a model architecture.
 // Generated from known-good models, used for comparison-based anomaly detection.
@@ -46,12 +46,11 @@ type TensorProfile struct {
 
 // LoadReference reads a reference profile from a JSON file.
 func LoadReference(path string) (*ReferenceProfile, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read reference: %w", err)
-	}
 	var ref ReferenceProfile
-	if err := json.Unmarshal(data, &ref); err != nil {
+	if err := decodeJSONFile(path, maxReferenceBytes, &ref); err != nil {
+		return nil, fmt.Errorf("parse reference: %w", err)
+	}
+	if err := ValidateReference(&ref); err != nil {
 		return nil, fmt.Errorf("parse reference: %w", err)
 	}
 	return &ref, nil
@@ -59,17 +58,93 @@ func LoadReference(path string) (*ReferenceProfile, error) {
 
 // SaveReference writes a reference profile to a JSON file.
 func SaveReference(path string, ref *ReferenceProfile) error {
-	data, err := json.MarshalIndent(ref, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal reference: %w", err)
+	if err := ValidateReference(ref); err != nil {
+		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	if err := writeJSONAtomic(path, ref, 0644); err != nil {
+		return fmt.Errorf("write reference: %w", err)
+	}
+	return nil
+}
+
+// ValidateReference rejects incomplete or internally inconsistent security
+// profiles before they can influence anomaly decisions.
+func ValidateReference(ref *ReferenceProfile) error {
+	if ref == nil {
+		return fmt.Errorf("reference profile is required")
+	}
+	if ref.Name == "" || len(ref.Name) > 1024 || ref.Architecture == "" || len(ref.Architecture) > 256 ||
+		ref.QuantType == "" || !validSHA256(ref.StructureHash) || ref.ParameterCount == 0 {
+		return fmt.Errorf("missing or invalid required profile fields")
+	}
+	if len(ref.TensorProfiles) == 0 || len(ref.TensorProfiles) > 100_000 {
+		return fmt.Errorf("tensor profile count is outside the supported range")
+	}
+	for name, profile := range ref.TensorProfiles {
+		if name == "" || len(name) > 10*1024*1024 || profile == nil ||
+			!validRange(profile.MeanRange, false) || !validRange(profile.VarianceRange, true) ||
+			!validRange(profile.KurtosisRange, false) {
+			return fmt.Errorf("invalid tensor profile %q", name)
+		}
+	}
+	if ref.SourceHash != "" && !validSHA256(ref.SourceHash) {
+		return fmt.Errorf("invalid source hash")
+	}
+	if len(ref.SourceHashes) > 100_000 {
+		return fmt.Errorf("too many source hashes")
+	}
+	for _, hash := range ref.SourceHashes {
+		if !validSHA256(hash) {
+			return fmt.Errorf("invalid source hash")
+		}
+	}
+	if ref.SourceHash == "" && len(ref.SourceHashes) == 0 {
+		return fmt.Errorf("reference profile requires source provenance")
+	}
+	if ref.SampleCount < 0 || ref.SampleCount > 100_000 {
+		return fmt.Errorf("invalid sample count")
+	}
+	if ref.Thresholds != nil {
+		if err := validateThresholds(*ref.Thresholds); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validRange(value [2]float64, nonNegative bool) bool {
+	if math.IsNaN(value[0]) || math.IsNaN(value[1]) || math.IsInf(value[0], 0) ||
+		math.IsInf(value[1], 0) || value[0] > value[1] {
+		return false
+	}
+	return !nonNegative || value[0] >= 0
+}
+
+// ValidateReferenceMatch prevents a profile for another artifact layout from
+// being presented as high-confidence evidence for the current model.
+func ValidateReferenceMatch(ref *ReferenceProfile, fp *Fingerprint) error {
+	if err := ValidateReference(ref); err != nil {
+		return err
+	}
+	if fp == nil || ref.Architecture != fp.Architecture || ref.QuantType != fp.QuantType ||
+		ref.StructureHash != fp.StructureHash || ref.ParameterCount != fp.ParameterCount {
+		return fmt.Errorf("reference profile does not match model architecture, quantization, structure, and parameter count")
+	}
+	return nil
 }
 
 // ProfileFromStats generates a reference profile from computed tensor statistics.
 // The margin parameter (e.g., 3.0) defines how many standard deviations
 // around the measured values to use as the acceptable range.
 func ProfileFromStats(stats []*TensorStats, fp *Fingerprint, margin float64) *ReferenceProfile {
+	if fp == nil || len(stats) == 0 || math.IsNaN(margin) || math.IsInf(margin, 0) || margin <= 0 || margin > 10 {
+		return nil
+	}
+	for _, stat := range stats {
+		if stat == nil {
+			return nil
+		}
+	}
 	ref := &ReferenceProfile{
 		Name:           fp.Architecture + "-" + fp.QuantType,
 		Architecture:   fp.Architecture,
@@ -139,10 +214,20 @@ func rangeFromValues(values []float64, margin float64) [2]float64 {
 // MergeProfiles combines multiple reference profiles (from different clean samples)
 // into a single profile with wider, more robust ranges.
 func MergeProfiles(profiles []*ReferenceProfile, margin float64) *ReferenceProfile {
-	if len(profiles) == 0 {
+	if len(profiles) == 0 || math.IsNaN(margin) || math.IsInf(margin, 0) || margin <= 0 || margin > 10 {
 		return nil
 	}
 	base := profiles[0]
+	if err := ValidateReference(base); err != nil {
+		return nil
+	}
+	for _, profile := range profiles[1:] {
+		if err := ValidateReference(profile); err != nil || profile.Architecture != base.Architecture ||
+			profile.QuantType != base.QuantType || profile.StructureHash != base.StructureHash ||
+			profile.ParameterCount != base.ParameterCount {
+			return nil
+		}
+	}
 
 	merged := &ReferenceProfile{
 		Name:           base.Name + "-merged",
@@ -198,7 +283,7 @@ func MergeProfiles(profiles []*ReferenceProfile, margin float64) *ReferenceProfi
 // MatchConfidence determines how well a reference profile matches a given fingerprint.
 // Returns a confidence level: "high", "medium", "low", or "insufficient-data".
 func MatchConfidence(ref *ReferenceProfile, fp *Fingerprint) string {
-	if ref == nil {
+	if ref == nil || fp == nil {
 		return "insufficient-data"
 	}
 

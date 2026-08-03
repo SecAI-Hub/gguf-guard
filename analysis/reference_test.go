@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -52,9 +53,12 @@ func TestSaveLoadReference(t *testing.T) {
 	path := filepath.Join(dir, "ref.json")
 
 	ref := &ReferenceProfile{
-		Name:         "test-llama-Q4_K",
-		Architecture: "llama",
-		QuantType:    "Q4_K",
+		Name:           "test-llama-Q4_K",
+		Architecture:   "llama",
+		QuantType:      "Q4_K",
+		StructureHash:  strings.Repeat("a", 64),
+		ParameterCount: 1,
+		SourceHash:     strings.Repeat("b", 64),
 		TensorProfiles: map[string]*TensorProfile{
 			"weight": {
 				MeanRange:     [2]float64{-0.1, 0.1},
@@ -100,6 +104,29 @@ func TestLoadReferenceInvalidJSON(t *testing.T) {
 	_, err := LoadReference(path)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestValidateReferenceRequiresProvenance(t *testing.T) {
+	ref := &ReferenceProfile{
+		Name: "test", Architecture: "llama", QuantType: "F32",
+		StructureHash: strings.Repeat("a", 64), ParameterCount: 1,
+		TensorProfiles: map[string]*TensorProfile{
+			"weight": {MeanRange: [2]float64{-1, 1}, VarianceRange: [2]float64{0, 1}, KurtosisRange: [2]float64{-1, 1}},
+		},
+	}
+	if err := ValidateReference(ref); err == nil {
+		t.Fatal("reference without source-hash provenance must be rejected")
+	}
+}
+
+func TestReferenceThresholdsCannotRelaxDefaults(t *testing.T) {
+	custom := DefaultThresholds
+	custom.MaxAbsMean = DefaultThresholds.MaxAbsMean * 100
+	custom.MaxNaNFraction = 1
+	effective := tightenedThresholds(custom)
+	if effective.MaxAbsMean != DefaultThresholds.MaxAbsMean || effective.MaxNaNFraction != 0 {
+		t.Fatalf("reference thresholds relaxed global limits: %+v", effective)
 	}
 }
 

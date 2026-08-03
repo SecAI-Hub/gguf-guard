@@ -35,6 +35,7 @@ func createTestGGUF(t *testing.T, dir, name string, tensors []gguf.TensorInfo, m
 
 	var dataOffset uint64
 	for i, ti := range tensors {
+		dataOffset = (dataOffset + 31) &^ 31
 		writeStr(f, ti.Name)
 		binary.Write(f, binary.LittleEndian, ti.NDims)
 		for _, d := range ti.Dims {
@@ -52,9 +53,7 @@ func createTestGGUF(t *testing.T, dir, name string, tensors []gguf.TensorInfo, m
 		f.Write(make([]byte, padding))
 	}
 
-	for _, ti := range tensors {
-		f.Write(make([]byte, ti.ByteSize()))
-	}
+	f.Write(make([]byte, dataOffset))
 
 	return path
 }
