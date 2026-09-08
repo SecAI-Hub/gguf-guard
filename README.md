@@ -36,7 +36,7 @@ cd gguf-guard
 go build -o gguf-guard ./cmd/gguf-guard
 ```
 
-The project requires Go 1.26.5 or newer.
+The project requires Go 1.26.8 or newer. CI and container builds use Go 1.27.1.
 
 Analysis fails closed if any selected tensor cannot be read, dequantized, or
 inspected. A critical anomaly always produces a failing exit status regardless
