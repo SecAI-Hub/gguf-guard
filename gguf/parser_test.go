@@ -1,13 +1,224 @@
 package gguf
 
 import (
+	"bytes"
 	"encoding/binary"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func metadataArrayBytes(t *testing.T, element MetadataValueType, count uint64, payload []byte) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	for _, value := range []any{uint32(element), count} {
+		if err := binary.Write(&buffer, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	buffer.Write(payload)
+	return buffer.Bytes()
+}
+
+func arrayParseState(raw []byte) *parseState {
+	return &parseState{r: &io.LimitedReader{R: bytes.NewReader(raw), N: int64(len(raw))}}
+}
+
+func writeArrayTestGGUF(t *testing.T, arrays map[string][]byte) string {
+	t.Helper()
+	var buffer bytes.Buffer
+	write := func(value any) {
+		if err := binary.Write(&buffer, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	text := func(value string) { write(uint64(len(value))); buffer.WriteString(value) }
+	buffer.Write(Magic[:])
+	write(uint32(3))
+	write(uint64(1))
+	write(uint64(len(arrays)))
+	for key, raw := range arrays {
+		text(key)
+		write(uint32(MetaArray))
+		buffer.Write(raw)
+	}
+	text("weight")
+	write(uint32(1))
+	write(uint64(1))
+	write(uint32(TypeF32))
+	write(uint64(0))
+	for buffer.Len()%32 != 0 {
+		buffer.WriteByte(0)
+	}
+	write(float32(0))
+	path := filepath.Join(t.TempDir(), "arrays.gguf")
+	if err := os.WriteFile(path, buffer.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestParseLargeTokenizerAndPrimitiveArrays(t *testing.T) {
+	const count = 248_320
+	tokens := bytes.Repeat([]byte{1, 0, 0, 0, 0, 0, 0, 0, 't'}, count)
+	types := make([]byte, count*4)
+	for i := range count {
+		binary.LittleEndian.PutUint32(types[i*4:], uint32(i%8))
+	}
+	path := writeArrayTestGGUF(t, map[string][]byte{
+		"tokenizer.ggml.tokens":     metadataArrayBytes(t, MetaString, count, tokens),
+		"tokenizer.ggml.token_type": metadataArrayBytes(t, MetaInt32, count, types),
+	})
+	parsed, err := Parse(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotTokens := parsed.Metadata["tokenizer.ggml.tokens"].([]any)
+	gotTypes := parsed.Metadata["tokenizer.ggml.token_type"].([]any)
+	if len(gotTokens) != count || len(gotTypes) != count || gotTokens[count-1] != "t" || gotTypes[count-1] != int32((count-1)%8) {
+		t.Fatal("large string/primitive array values did not round trip")
+	}
+}
+
+func TestMetadataArrayElementLimit(t *testing.T) {
+	raw := metadataArrayBytes(t, MetaUint8, maxMetadataArrayElements, bytes.Repeat([]byte{7}, maxMetadataArrayElements))
+	value, err := readValue(arrayParseState(raw), MetaArray, 0)
+	if err != nil || len(value.([]any)) != maxMetadataArrayElements {
+		t.Fatalf("exact element boundary rejected: %v", err)
+	}
+	for _, count := range []uint64{maxMetadataArrayElements + 1, math.MaxUint64} {
+		state := arrayParseState(metadataArrayBytes(t, MetaUint8, count, nil))
+		if _, err := readValue(state, MetaArray, 0); err == nil || !strings.Contains(err.Error(), "array too long") {
+			t.Fatalf("oversized count %d accepted: %v", count, err)
+		}
+		if state.arrayValuesParsed != 0 {
+			t.Fatal("oversized array consumed a value reservation")
+		}
+	}
+}
+
+func TestMetadataArrayWirePreflight(t *testing.T) {
+	for _, element := range []MetadataValueType{MetaUint8, MetaUint64, MetaString, MetaArray} {
+		t.Run(elementName(element), func(t *testing.T) {
+			width, err := minimumValueBytes(element)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := metadataArrayBytes(t, element, 2, make([]byte, width))
+			state := arrayParseState(raw)
+			if _, err := readValue(state, MetaArray, 0); err == nil || !strings.Contains(err.Error(), "remaining") {
+				t.Fatalf("truncated array not rejected by wire preflight: %v", err)
+			}
+			if state.arrayValuesParsed != 0 {
+				t.Fatal("truncated declaration reached allocation reservation")
+			}
+		})
+	}
+	// Actual Parse must constrain remaining bytes to file size, not only the
+	// much larger header allowance, before allocating a million interface slots.
+	path := writeArrayTestGGUF(t, map[string][]byte{"values": metadataArrayBytes(t, MetaUint8, maxMetadataArrayElements, nil)})
+	if _, err := Parse(path); err == nil || !strings.Contains(err.Error(), "remaining") {
+		t.Fatalf("small file bypassed array allocation preflight: %v", err)
+	}
+	raw := metadataArrayBytes(t, MetaUint64, 2, make([]byte, 16))
+	state := &parseState{r: &io.LimitedReader{R: bytes.NewReader(raw), N: 16}}
+	if _, err := readValue(state, MetaArray, 0); err == nil {
+		t.Fatal("header remaining-byte bound bypassed")
+	}
+	if err := requireWireBytes(bytes.NewReader(nil), math.MaxUint64, 8); err == nil {
+		t.Fatal("wire size multiplication overflow accepted")
+	}
+}
+
+func elementName(value MetadataValueType) string {
+	return map[MetadataValueType]string{MetaUint8: "uint8", MetaUint64: "uint64", MetaString: "string", MetaArray: "nested"}[value]
+}
+
+func TestMetadataArrayAggregateAndTypes(t *testing.T) {
+	state := arrayParseState(metadataArrayBytes(t, MetaUint8, 3, []byte{1, 2, 3}))
+	state.arrayValuesParsed = maxMetadataArrayValues - 3
+	if _, err := readValue(state, MetaArray, 0); err != nil || state.arrayValuesParsed != maxMetadataArrayValues {
+		t.Fatalf("exact aggregate boundary failed: %v", err)
+	}
+	state.r = arrayParseState(metadataArrayBytes(t, MetaUint8, 1, []byte{1})).r
+	if _, err := readValue(state, MetaArray, 0); err == nil || !strings.Contains(err.Error(), "aggregate") {
+		t.Fatal("aggregate boundary bypassed")
+	}
+	state.arrayValuesParsed = math.MaxUint64
+	state.r = arrayParseState(metadataArrayBytes(t, MetaUint8, 0, nil)).r
+	if _, err := readValue(state, MetaArray, 0); err == nil {
+		t.Fatal("aggregate subtraction overflow accepted")
+	}
+	for _, count := range []uint64{0, 1} {
+		state := arrayParseState(metadataArrayBytes(t, MetadataValueType(math.MaxUint32), count, nil))
+		if _, err := readValue(state, MetaArray, 0); err == nil || !strings.Contains(err.Error(), "element type") {
+			t.Fatal("invalid element type accepted")
+		}
+	}
+	child := metadataArrayBytes(t, MetaUint8, 2, []byte{1, 2})
+	state = arrayParseState(metadataArrayBytes(t, MetaArray, 2, append(append([]byte{}, child...), child...)))
+	state.arrayValuesParsed = maxMetadataArrayValues - 5
+	if _, err := readValue(state, MetaArray, 0); err == nil || !strings.Contains(err.Error(), "aggregate") {
+		t.Fatal("nested arrays bypassed aggregate budget")
+	}
+	invalid := metadataArrayBytes(t, MetadataValueType(math.MaxUint32), 0, nil)
+	if _, err := readValue(arrayParseState(metadataArrayBytes(t, MetaArray, 1, invalid)), MetaArray, 0); err == nil {
+		t.Fatal("nested invalid element type accepted")
+	}
+}
+
+func TestMetadataArrayDepthPreserved(t *testing.T) {
+	for _, depth := range []int{maxMetadataArrayDepth, maxMetadataArrayDepth + 1} {
+		raw := metadataArrayBytes(t, MetaUint8, 1, []byte{1})
+		for i := 1; i < depth; i++ {
+			raw = metadataArrayBytes(t, MetaArray, 1, raw)
+		}
+		_, err := readValue(arrayParseState(raw), MetaArray, 0)
+		if (err != nil) != (depth > maxMetadataArrayDepth) {
+			t.Fatalf("depth %d: %v", depth, err)
+		}
+	}
+	// Existing semantics allow an empty array at the terminal depth: no child
+	// is visited beyond it. Do not turn this compatibility fix into a new rule.
+	if _, err := readValue(arrayParseState(metadataArrayBytes(t, MetaArray, 0, nil)), MetaArray, maxMetadataArrayDepth); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMetadataStringAndKVLimitsPreserved(t *testing.T) {
+	var buffer bytes.Buffer
+	if err := binary.Write(&buffer, binary.LittleEndian, uint64(maxStringLen)); err != nil {
+		t.Fatal(err)
+	}
+	reader := &io.LimitedReader{R: bytes.NewReader(buffer.Bytes()), N: int64(buffer.Len())}
+	if _, err := readString(reader); err == nil || !strings.Contains(err.Error(), "remaining") {
+		t.Fatal("truncated string length reached data allocation")
+	}
+	buffer.Reset()
+	if err := binary.Write(&buffer, binary.LittleEndian, uint64(maxStringLen+1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readString(bytes.NewReader(buffer.Bytes())); err == nil || !strings.Contains(err.Error(), "too long") {
+		t.Fatal("string ceiling changed")
+	}
+	buffer.Reset()
+	buffer.Write(Magic[:])
+	for _, value := range []any{uint32(3), uint64(1), uint64(100_001)} {
+		if err := binary.Write(&buffer, binary.LittleEndian, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := filepath.Join(t.TempDir(), "too-many-keys.gguf")
+	if err := os.WriteFile(path, buffer.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(path); err == nil || !strings.Contains(err.Error(), "metadata KV count too large") {
+		t.Fatalf("100000-pair ceiling changed: %v", err)
+	}
+}
 
 // writeTestGGUF creates a minimal valid GGUF v3 file with the given tensors and metadata.
 func writeTestGGUF(t *testing.T, dir string, tensors []TensorInfo, metadata map[string]any) string {

@@ -14,16 +14,19 @@ import (
 )
 
 const (
-	maxMetaKVCount                = 100_000
-	maxTensorCount                = 100_000
-	maxStringLen                  = 10 * 1024 * 1024 // 10 MiB
-	maxMetadataKeyLen             = 4 * 1024
-	maxTensorNameLen              = 64 * 1024
-	maxHeaderBytes                = 256 * 1024 * 1024
-	maxMetadataArrayDepth         = 8
-	maxMetadataArrayValues        = 2_000_000
-	maxTensorReadBytes            = 256 * 1024 * 1024
-	maxTensorSampleBytes   uint64 = 64 * 1024 * 1024
+	maxMetaKVCount        = 100_000
+	maxTensorCount        = 100_000
+	maxStringLen          = 10 * 1024 * 1024 // 10 MiB
+	maxMetadataKeyLen     = 4 * 1024
+	maxTensorNameLen      = 64 * 1024
+	maxHeaderBytes        = 256 * 1024 * 1024
+	maxMetadataArrayDepth = 8
+	// Array elements (for example tokenizer vocabulary) are not metadata pairs.
+	// Keep each allocation bounded independently of the unchanged total budget.
+	maxMetadataArrayElements        = 1_000_000
+	maxMetadataArrayValues          = 2_000_000
+	maxTensorReadBytes              = 256 * 1024 * 1024
+	maxTensorSampleBytes     uint64 = 64 * 1024 * 1024
 )
 
 type parseState struct {
@@ -67,7 +70,7 @@ func Parse(path string) (*File, error) {
 		FileSize:   stat.Size(),
 		sourceInfo: stat,
 	}
-	limited := &io.LimitedReader{R: f, N: maxHeaderBytes + 1}
+	limited := &io.LimitedReader{R: f, N: min(stat.Size(), maxHeaderBytes+1)}
 	state := &parseState{r: limited}
 
 	// Read magic
@@ -423,6 +426,9 @@ func readStringLimit(r io.Reader, maxLength uint64) (string, error) {
 	if length > maxLength {
 		return "", fmt.Errorf("string too long: %d bytes", length)
 	}
+	if err := requireWireBytes(r, length, 1); err != nil {
+		return "", err
+	}
 	buf := make([]byte, length)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		return "", err
@@ -431,6 +437,38 @@ func readStringLimit(r io.Reader, maxLength uint64) (string, error) {
 		return "", fmt.Errorf("string is not valid UTF-8")
 	}
 	return string(buf), nil
+}
+
+// requireWireBytes rejects impossible declarations before allocating. Parse's
+// LimitedReader bounds both the actual file and the existing header budget.
+// Division avoids overflowing count*width on hostile uint64 declarations.
+func requireWireBytes(r io.Reader, count, width uint64) error {
+	if width == 0 || count > ^uint64(0)/width {
+		return fmt.Errorf("metadata byte count overflows uint64")
+	}
+	if limited, ok := r.(*io.LimitedReader); ok {
+		if limited.N < 0 || count > uint64(limited.N)/width {
+			return fmt.Errorf("declared metadata exceeds remaining file/header bytes")
+		}
+	}
+	return nil
+}
+
+func minimumValueBytes(vtype MetadataValueType) (uint64, error) {
+	switch vtype {
+	case MetaUint8, MetaInt8, MetaBool:
+		return 1, nil
+	case MetaUint16, MetaInt16:
+		return 2, nil
+	case MetaUint32, MetaInt32, MetaFloat32:
+		return 4, nil
+	case MetaUint64, MetaInt64, MetaFloat64, MetaString:
+		return 8, nil // Strings require at least their uint64 length prefix.
+	case MetaArray:
+		return 12, nil // Nested arrays require element type and uint64 length.
+	default:
+		return 0, fmt.Errorf("unsupported metadata array element type: %d", vtype)
+	}
 }
 
 func readValue(state *parseState, vtype MetadataValueType, depth int) (any, error) {
@@ -489,11 +527,23 @@ func readValue(state *parseState, vtype MetadataValueType, depth int) (any, erro
 		if err := binary.Read(r, binary.LittleEndian, &length); err != nil {
 			return nil, err
 		}
-		if length > maxMetaKVCount {
+		minimumBytes, err := minimumValueBytes(MetadataValueType(elemType))
+		if err != nil {
+			return nil, err
+		}
+		if length > maxMetadataArrayElements {
 			return nil, fmt.Errorf("array too long: %d", length)
 		}
-		if state.arrayValuesParsed > maxMetadataArrayValues-length {
+		if length > maxMetadataArrayValues || state.arrayValuesParsed > maxMetadataArrayValues-length {
 			return nil, fmt.Errorf("aggregate metadata array values exceed %d", maxMetadataArrayValues)
+		}
+		// Preserve the existing depth semantics, but refuse a nonempty array
+		// whose first child would exceed the limit before allocating its slots.
+		if length > 0 && depth == maxMetadataArrayDepth {
+			return nil, fmt.Errorf("metadata array nesting exceeds %d", maxMetadataArrayDepth)
+		}
+		if err := requireWireBytes(r, length, minimumBytes); err != nil {
+			return nil, err
 		}
 		state.arrayValuesParsed += length
 		arr := make([]any, 0, length)
