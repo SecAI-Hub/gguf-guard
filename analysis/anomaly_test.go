@@ -33,6 +33,39 @@ func TestDetectAnomaliesEmpty(t *testing.T) {
 	}
 }
 
+func TestDetectAnomaliesWithoutFiniteSamples(t *testing.T) {
+	tests := []struct {
+		name   string
+		values []float32
+		want   map[string]bool
+	}{
+		{"nan", []float32{float32(math.NaN()), float32(math.NaN())}, map[string]bool{"nan_values": true}},
+		{"inf", []float32{float32(math.Inf(1)), float32(math.Inf(-1))}, map[string]bool{"inf_values": true}},
+		{"mixed", []float32{float32(math.NaN()), float32(math.Inf(1))}, map[string]bool{"nan_values": true, "inf_values": true}},
+		{"empty", nil, map[string]bool{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stats := ComputeStats(tt.values, "weight", "F32", []uint64{uint64(len(tt.values))}, uint64(len(tt.values)))
+			if stats.Samples != 0 {
+				t.Fatalf("finite samples = %d, want 0", stats.Samples)
+			}
+			report := DetectAnomalies([]*TensorStats{stats}, nil)
+			if len(report.Anomalies) != len(tt.want) {
+				t.Fatalf("anomalies = %+v, want only %v", report.Anomalies, tt.want)
+			}
+			for _, anomaly := range report.Anomalies {
+				if !tt.want[anomaly.Type] || anomaly.Severity != SeverityCritical {
+					t.Errorf("unexpected anomaly: %+v", anomaly)
+				}
+			}
+			if len(tt.want) > 0 && report.Score <= 0 {
+				t.Error("non-finite-only tensor received a clean score")
+			}
+		})
+	}
+}
+
 func TestFinalizeAnomalyReportRefreshesDerivedFields(t *testing.T) {
 	report := DetectAnomalies([]*TensorStats{{Name: "clean", Samples: 10, Variance: 1}}, nil)
 	report.Anomalies = append(report.Anomalies, Anomaly{Type: "policy_overlap", Severity: SeverityCritical})

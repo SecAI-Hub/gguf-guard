@@ -232,6 +232,33 @@ func computeLayeredScore(layers *LayerScores, anomalies []Anomaly) float64 {
 func checkTensorAnomalies(s *TensorStats, th *Thresholds) []Anomaly {
 	var anomalies []Anomaly
 
+	// NaN or Inf values
+	total := s.Samples + s.NaNCount + s.InfCount
+	if total > 0 {
+		nanFrac := float64(s.NaNCount) / float64(total)
+		infFrac := float64(s.InfCount) / float64(total)
+		if nanFrac > th.MaxNaNFraction {
+			anomalies = append(anomalies, Anomaly{
+				TensorName:  s.Name,
+				Type:        "nan_values",
+				Severity:    SeverityCritical,
+				Value:       nanFrac,
+				Threshold:   th.MaxNaNFraction,
+				Description: fmt.Sprintf("%d NaN values detected", s.NaNCount),
+			})
+		}
+		if infFrac > th.MaxInfFraction {
+			anomalies = append(anomalies, Anomaly{
+				TensorName:  s.Name,
+				Type:        "inf_values",
+				Severity:    SeverityCritical,
+				Value:       infFrac,
+				Threshold:   th.MaxInfFraction,
+				Description: fmt.Sprintf("%d Inf values detected", s.InfCount),
+			})
+		}
+	}
+
 	if s.Samples == 0 {
 		return anomalies
 	}
@@ -294,33 +321,6 @@ func checkTensorAnomalies(s *TensorStats, th *Thresholds) []Anomaly {
 			Threshold:   th.MaxOutlierRatio,
 			Description: fmt.Sprintf("%.1f%% of values beyond 3σ (expected ~0.3%%)", s.OutlierRatio*100),
 		})
-	}
-
-	// NaN or Inf values
-	total := s.Samples + s.NaNCount + s.InfCount
-	if total > 0 {
-		nanFrac := float64(s.NaNCount) / float64(total)
-		infFrac := float64(s.InfCount) / float64(total)
-		if nanFrac > th.MaxNaNFraction {
-			anomalies = append(anomalies, Anomaly{
-				TensorName:  s.Name,
-				Type:        "nan_values",
-				Severity:    SeverityCritical,
-				Value:       nanFrac,
-				Threshold:   th.MaxNaNFraction,
-				Description: fmt.Sprintf("%d NaN values detected", s.NaNCount),
-			})
-		}
-		if infFrac > th.MaxInfFraction {
-			anomalies = append(anomalies, Anomaly{
-				TensorName:  s.Name,
-				Type:        "inf_values",
-				Severity:    SeverityCritical,
-				Value:       infFrac,
-				Threshold:   th.MaxInfFraction,
-				Description: fmt.Sprintf("%d Inf values detected", s.InfCount),
-			})
-		}
 	}
 
 	return anomalies
